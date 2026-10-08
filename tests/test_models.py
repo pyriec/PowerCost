@@ -53,3 +53,80 @@ def test_device_statistics_rollovers_and_averages():
     # 2026 total was 9.0 + 5.0 = 14.0 €
     assert stats.yearly_history.get("2026") == 14.0
     assert stats.max_cost_year == 14.0
+
+
+def test_device_statistics_peak_offpeak_consumption():
+    """Test peak and off-peak accumulation and rollovers."""
+    stats = DeviceStatistics(device_id="water_heater")
+    t1 = datetime(2026, 3, 1, 4, 0, tzinfo=timezone.utc)
+
+    # Off-peak consumption
+    stats.add_consumption(
+        energy_kwh=2.0,
+        cost=0.30,
+        timestamp=t1,
+        tariff="offpeak",
+    )
+    assert stats.cost_today == 0.30
+    assert stats.cost_today_offpeak == 0.30
+    assert stats.cost_today_peak == 0.0
+    assert stats.energy_today_offpeak == 2.0
+    assert stats.energy_today_peak == 0.0
+
+    # Peak consumption later that day
+    t2 = datetime(2026, 3, 1, 18, 0, tzinfo=timezone.utc)
+    stats.add_consumption(
+        energy_kwh=3.0,
+        cost=0.75,
+        timestamp=t2,
+        tariff="peak",
+    )
+    assert stats.cost_today == 1.05
+    assert stats.cost_today_offpeak == 0.30
+    assert stats.cost_today_peak == 0.75
+    assert stats.cost_total_offpeak == 0.30
+    assert stats.cost_total_peak == 0.75
+    assert stats.energy_total_offpeak == 2.0
+    assert stats.energy_total_peak == 3.0
+
+    # Rollover to next day
+    t3 = datetime(2026, 3, 2, 2, 0, tzinfo=timezone.utc)
+    stats.add_consumption(
+        energy_kwh=1.0,
+        cost=0.15,
+        timestamp=t3,
+        tariff="offpeak",
+    )
+    assert stats.cost_today == 0.15
+    assert stats.cost_today_offpeak == 0.15
+    assert stats.cost_today_peak == 0.0
+    # Totals accumulate
+    assert stats.cost_total == 1.20
+    assert stats.cost_total_offpeak == 0.45
+    assert stats.cost_total_peak == 0.75
+
+
+def test_device_statistics_serialization():
+    """Test serialization to and from dictionary."""
+    stats = DeviceStatistics(
+        device_id="car_charger",
+        cost_today_offpeak=1.5,
+        cost_today_peak=2.5,
+        cost_total_offpeak=10.0,
+        cost_total_peak=20.0,
+        energy_today_offpeak=10.0,
+        energy_today_peak=12.0,
+        energy_total_offpeak=100.0,
+        energy_total_peak=150.0,
+    )
+    data = stats.to_dict()
+    restored = DeviceStatistics.from_dict(data)
+
+    assert restored.device_id == "car_charger"
+    assert restored.cost_today_offpeak == 1.5
+    assert restored.cost_today_peak == 2.5
+    assert restored.cost_total_offpeak == 10.0
+    assert restored.cost_total_peak == 20.0
+    assert restored.energy_today_offpeak == 10.0
+    assert restored.energy_total_peak == 150.0
+

@@ -33,13 +33,14 @@
         }
       },
       "device_add": {
-        "title": "Ajout du premier appareil",
+        "title": "Ajout d'un appareil",
         "description": "Configurez l'appareil électrique à mesurer.",
         "data": {
           "device_name": "Nom de l'appareil",
           "source_entity": "Entité source de mesure",
           "source_type": "Type de source",
-          "source_unit": "Unité de mesure (optionnel si détectée)"
+          "source_unit": "Unité de mesure (optionnel si détectée)",
+          "add_another": "Ajouter un autre appareil immédiatement"
         }
       }
     }
@@ -69,6 +70,10 @@
           "device_id": "Sélectionner l'appareil",
           "action": "Action"
         }
+      },
+      "delete_device": {
+        "title": "Supprimer un appareil",
+        "description": "Êtes-vous sûr de vouloir supprimer l'appareil '{device_name}' ? Cet appareil et toutes ses entités seront retirés sans affecter vos autres appareils."
       },
       "edit_device": {
         "title": "Modifier l'appareil",
@@ -102,6 +107,18 @@
       "cost_month": { "name": "Coût ce mois" },
       "cost_year": { "name": "Coût cette année" },
       "cost_total": { "name": "Coût total" },
+      "cost_day_offpeak": { "name": "Coût aujourd'hui (Heures Creuses)" },
+      "cost_day_peak": { "name": "Coût aujourd'hui (Heures Pleines)" },
+      "cost_month_offpeak": { "name": "Coût ce mois (Heures Creuses)" },
+      "cost_month_peak": { "name": "Coût ce mois (Heures Pleines)" },
+      "cost_year_offpeak": { "name": "Coût cette année (Heures Creuses)" },
+      "cost_year_peak": { "name": "Coût cette année (Heures Pleines)" },
+      "cost_total_offpeak": { "name": "Coût total (Heures Creuses)" },
+      "cost_total_peak": { "name": "Coût total (Heures Pleines)" },
+      "energy_day_offpeak": { "name": "Énergie aujourd'hui (Heures Creuses)" },
+      "energy_day_peak": { "name": "Énergie aujourd'hui (Heures Pleines)" },
+      "energy_total_offpeak": { "name": "Énergie totale (Heures Creuses)" },
+      "energy_total_peak": { "name": "Énergie totale (Heures Pleines)" },
       "cost_max_day": { "name": "Coût max jour" },
       "cost_max_month": { "name": "Coût max mois" },
       "cost_max_year": { "name": "Coût max année" },

@@ -26,8 +26,9 @@
   - Tolérance aux redémarrages de Home Assistant et restaurations d'états sans perte ni saut de valeur.
 - **Reconstruction Historique via Recorder** :
   - Service natif permettant de recalculer le coût passé sur n'importe quelle période à partir des historiques enregistrés dans la base de données Home Assistant.
-- **10 Entités Statistiques par Appareil** :
-  - Coûts actuels : Jour, Mois, Année, Total.
+- **10 à 22 Entités Statistiques par Appareil** :
+  - Coûts globaux : Jour, Mois, Année, Total.
+  - Découpage Heures Creuses / Heures Pleines (en mode HC/HP) : Coût jour HC/HP, Coût mois HC/HP, Coût année HC/HP, Coût total HC/HP, ainsi que l'énergie correspondante (compatible Dashboard Énergie).
   - Extrema : Coût max jour, Coût max mois, Coût max année.
   - Moyennes : Coût moyen jour, Coût moyen mois, Coût moyen année.
 
@@ -84,9 +85,9 @@ L'intégration se configure entièrement via l'interface graphique de Home Assis
     - Valeur Heures Creuses (ex: `HC`, `off_peak`, `creuses`)
     - Valeur Heures Pleines (ex: `HP`, `peak`, `pleines`)
 
-### Étape 2 : Configuration du Premier Appareil
+### Étape 2 : Configuration d'un Appareil
 
-- **Nom de l'appareil** : Nom convivial (ex: `Machine à laver`).
+- **Nom de l'appareil** : Nom convivial (ex: `Machine à laver`, `Serveur Dell`).
 - **Entité source** : Capteur mesurant la puissance ou l'énergie (ex: `sensor.prise_machine_power`).
 - **Type de source** :
   - *Puissance instantanée*
@@ -95,24 +96,27 @@ L'intégration se configure entièrement via l'interface graphique de Home Assis
   - *Énergie annuelle*
   - *Énergie totale*
 - **Unité** : Optionnel si fournie par l'entité (`W`, `kW`, `Wh`, `kWh`, `MWh`).
+- **Ajouter un autre appareil immédiatement** : Cochez cette case pour configurer directement un second appareil sous la même entrée sans ressaisir vos tarifs.
 
 ---
 
 ## 📱 Gestion Multi-Appareils
 
-Pour ajouter d'autres appareils ou modifier la tarification :
+Vous pouvez piloter plusieurs appareils sous une seule entrée PowerCost (partageant la même tarification) :
 1. Allez dans **Paramètres** $\rightarrow$ **Appareils et services**.
-2. Cliquez sur **Configurer** sur la carte **PowerCost**.
-3. Choisissez :
-   - **Ajouter un appareil**
-   - **Modifier ou supprimer un appareil**
-   - **Modifier la configuration tarifaire**
+2. Cliquez sur **Configurer** sur votre carte **PowerCost**.
+3. Choisissez l'action souhaitée :
+   - **Ajouter un appareil** : ajoute un nouvel équipement sans ressaisir les tarifs.
+   - **Modifier ou supprimer un appareil** : sélectionnez un appareil précis pour éditer ses réglages ou le retirer individuellement (ses entités seront supprimées sans affecter vos autres appareils).
+   - **Modifier la configuration tarifaire** : met à jour le prix ou les entités tarifaires pour l'ensemble des appareils de l'entrée.
 
 ---
 
 ## 📊 Entités Créées par Appareil
 
-Chaque appareil génère automatiquement un périphérique (*Device*) regroupant 10 capteurs :
+Chaque appareil génère automatiquement un périphérique (*Device*) regroupant ses capteurs :
+
+### 1. Entités Générales (Tous Modes)
 
 | Capteur | Description | Classe d'état (`state_class`) | Unité |
 | :--- | :--- | :--- | :--- |
@@ -120,15 +124,34 @@ Chaque appareil génère automatiquement un périphérique (*Device*) regroupant
 | `sensor.<appareil>_cout_ce_mois` | Coût cumulé sur le mois en cours | `total` | € |
 | `sensor.<appareil>_cout_cette_annee` | Coût cumulé sur l'année en cours | `total` | € |
 | `sensor.<appareil>_cout_total` | Coût total cumulé depuis le début | `total_increasing` | € |
-| `sensor.<appareil>_cout_max_jour` | Dépense maximale constatée sur 1 jour | `measurement` | € |
-| `sensor.<appareil>_cout_max_mois` | Dépense maximale constatée sur 1 mois | `measurement` | € |
-| `sensor.<appareil>_cout_max_annee` | Dépense maximale constatée sur 1 an | `measurement` | € |
-| `sensor.<appareil>_cout_moyen_jour` | Dépense moyenne par jour actif | `measurement` | € |
-| `sensor.<appareil>_cout_moyen_mois` | Dépense moyenne par mois actif | `measurement` | € |
-| `sensor.<appareil>_cout_moyen_annee` | Dépense moyenne par an | `measurement` | € |
+| `sensor.<appareil>_cout_max_jour` | Dépense maximale constatée sur 1 jour | *Aucune* | € |
+| `sensor.<appareil>_cout_max_mois` | Dépense maximale constatée sur 1 mois | *Aucune* | € |
+| `sensor.<appareil>_cout_max_annee` | Dépense maximale constatée sur 1 an | *Aucune* | € |
+| `sensor.<appareil>_cout_moyen_jour` | Dépense moyenne par jour actif | *Aucune* | € |
+| `sensor.<appareil>_cout_moyen_mois` | Dépense moyenne par mois actif | *Aucune* | € |
+| `sensor.<appareil>_cout_moyen_annee` | Dépense moyenne par an | *Aucune* | € |
+
+### 2. Entités Découpées par Période (Mode Heures Creuses / Heures Pleines)
+
+| Capteur | Description | Classe d'état (`state_class`) | Unité |
+| :--- | :--- | :--- | :--- |
+| `sensor.<appareil>_cout_aujourd_hui_heures_creuses` | Coût aujourd'hui en Heures Creuses | `total` | € |
+| `sensor.<appareil>_cout_aujourd_hui_heures_pleines` | Coût aujourd'hui en Heures Pleines | `total` | € |
+| `sensor.<appareil>_cout_ce_mois_heures_creuses` | Coût ce mois en Heures Creuses | `total` | € |
+| `sensor.<appareil>_cout_ce_mois_heures_pleines` | Coût ce mois en Heures Pleines | `total` | € |
+| `sensor.<appareil>_cout_cette_annee_heures_creuses` | Coût cette année en Heures Creuses | `total` | € |
+| `sensor.<appareil>_cout_cette_annee_heures_pleines` | Coût cette année en Heures Pleines | `total` | € |
+| `sensor.<appareil>_cout_total_heures_creuses` | Coût total cumulé en Heures Creuses | `total_increasing` | € |
+| `sensor.<appareil>_cout_total_heures_pleines` | Coût total cumulé en Heures Pleines | `total_increasing` | € |
+| `sensor.<appareil>_energie_aujourd_hui_heures_creuses` | Énergie aujourd'hui en Heures Creuses | `total` | kWh |
+| `sensor.<appareil>_energie_aujourd_hui_heures_pleines` | Énergie aujourd'hui en Heures Pleines | `total` | kWh |
+| `sensor.<appareil>_energie_totale_heures_creuses` | Énergie cumulée en Heures Creuses | `total_increasing` | kWh |
+| `sensor.<appareil>_energie_totale_heures_pleines` | Énergie cumulée en Heures Pleines | `total_increasing` | kWh |
 
 ### Attributs Complémentaires
 - `energy_today_kwh`, `energy_month_kwh`, `energy_year_kwh`, `energy_total_kwh`
+- `energy_today_offpeak_kwh`, `energy_today_peak_kwh`, etc.
+- `tariff_period` (`offpeak` ou `peak`)
 - `current_price` (tarif applicable)
 - `source_entity`, `source_type`
 - `last_rebuild_timestamp`

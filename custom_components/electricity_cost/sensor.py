@@ -18,21 +18,34 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     DOMAIN,
+    PRICING_MODE_PEAK_OFFPEAK,
     SENSOR_COST_AVG_DAY,
     SENSOR_COST_AVG_MONTH,
     SENSOR_COST_AVG_YEAR,
     SENSOR_COST_DAY,
+    SENSOR_COST_DAY_OFFPEAK,
+    SENSOR_COST_DAY_PEAK,
     SENSOR_COST_MAX_DAY,
     SENSOR_COST_MAX_MONTH,
     SENSOR_COST_MAX_YEAR,
     SENSOR_COST_MONTH,
+    SENSOR_COST_MONTH_OFFPEAK,
+    SENSOR_COST_MONTH_PEAK,
     SENSOR_COST_TOTAL,
+    SENSOR_COST_TOTAL_OFFPEAK,
+    SENSOR_COST_TOTAL_PEAK,
     SENSOR_COST_YEAR,
+    SENSOR_COST_YEAR_OFFPEAK,
+    SENSOR_COST_YEAR_PEAK,
+    SENSOR_ENERGY_DAY_OFFPEAK,
+    SENSOR_ENERGY_DAY_PEAK,
+    SENSOR_ENERGY_TOTAL_OFFPEAK,
+    SENSOR_ENERGY_TOTAL_PEAK,
 )
 from .coordinator import ElectricityCostCoordinator
 from .models import DeviceConfig, DeviceStatistics
 
-SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
+BASE_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     SENSOR_COST_DAY: SensorEntityDescription(
         key=SENSOR_COST_DAY,
         translation_key=SENSOR_COST_DAY,
@@ -69,7 +82,7 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         key=SENSOR_COST_MAX_DAY,
         translation_key=SENSOR_COST_MAX_DAY,
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=None,
         native_unit_of_measurement=CURRENCY_EURO,
         suggested_display_precision=2,
     ),
@@ -77,7 +90,7 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         key=SENSOR_COST_MAX_MONTH,
         translation_key=SENSOR_COST_MAX_MONTH,
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=None,
         native_unit_of_measurement=CURRENCY_EURO,
         suggested_display_precision=2,
     ),
@@ -85,7 +98,7 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         key=SENSOR_COST_MAX_YEAR,
         translation_key=SENSOR_COST_MAX_YEAR,
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=None,
         native_unit_of_measurement=CURRENCY_EURO,
         suggested_display_precision=2,
     ),
@@ -93,7 +106,7 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         key=SENSOR_COST_AVG_DAY,
         translation_key=SENSOR_COST_AVG_DAY,
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=None,
         native_unit_of_measurement=CURRENCY_EURO,
         suggested_display_precision=2,
     ),
@@ -101,7 +114,7 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         key=SENSOR_COST_AVG_MONTH,
         translation_key=SENSOR_COST_AVG_MONTH,
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=None,
         native_unit_of_measurement=CURRENCY_EURO,
         suggested_display_precision=2,
     ),
@@ -109,8 +122,107 @@ SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         key=SENSOR_COST_AVG_YEAR,
         translation_key=SENSOR_COST_AVG_YEAR,
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=None,
         native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+}
+
+PEAK_OFFPEAK_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
+    SENSOR_COST_DAY_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_COST_DAY_OFFPEAK,
+        translation_key=SENSOR_COST_DAY_OFFPEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_COST_DAY_PEAK: SensorEntityDescription(
+        key=SENSOR_COST_DAY_PEAK,
+        translation_key=SENSOR_COST_DAY_PEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_COST_MONTH_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_COST_MONTH_OFFPEAK,
+        translation_key=SENSOR_COST_MONTH_OFFPEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_COST_MONTH_PEAK: SensorEntityDescription(
+        key=SENSOR_COST_MONTH_PEAK,
+        translation_key=SENSOR_COST_MONTH_PEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_COST_YEAR_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_COST_YEAR_OFFPEAK,
+        translation_key=SENSOR_COST_YEAR_OFFPEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_COST_YEAR_PEAK: SensorEntityDescription(
+        key=SENSOR_COST_YEAR_PEAK,
+        translation_key=SENSOR_COST_YEAR_PEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_COST_TOTAL_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_COST_TOTAL_OFFPEAK,
+        translation_key=SENSOR_COST_TOTAL_OFFPEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_COST_TOTAL_PEAK: SensorEntityDescription(
+        key=SENSOR_COST_TOTAL_PEAK,
+        translation_key=SENSOR_COST_TOTAL_PEAK,
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=CURRENCY_EURO,
+        suggested_display_precision=2,
+    ),
+    SENSOR_ENERGY_DAY_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_DAY_OFFPEAK,
+        translation_key=SENSOR_ENERGY_DAY_OFFPEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+    ),
+    SENSOR_ENERGY_DAY_PEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_DAY_PEAK,
+        translation_key=SENSOR_ENERGY_DAY_PEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+    ),
+    SENSOR_ENERGY_TOTAL_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_TOTAL_OFFPEAK,
+        translation_key=SENSOR_ENERGY_TOTAL_OFFPEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+    ),
+    SENSOR_ENERGY_TOTAL_PEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_TOTAL_PEAK,
+        translation_key=SENSOR_ENERGY_TOTAL_PEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement="kWh",
         suggested_display_precision=2,
     ),
 }
@@ -124,9 +236,14 @@ async def async_setup_entry(
     """Set up PowerCost sensor entities based on a config entry."""
     coordinator: ElectricityCostCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
+    is_peak_offpeak = coordinator.pricing_config.mode == PRICING_MODE_PEAK_OFFPEAK
+    sensor_map = dict(BASE_SENSOR_DESCRIPTIONS)
+    if is_peak_offpeak:
+        sensor_map.update(PEAK_OFFPEAK_SENSOR_DESCRIPTIONS)
+
     entities: list[ElectricityCostSensor] = []
     for device_cfg in coordinator.devices.values():
-        for sensor_type, description in SENSOR_DESCRIPTIONS.items():
+        for sensor_type, description in sensor_map.items():
             entities.append(
                 ElectricityCostSensor(
                     coordinator=coordinator,
@@ -185,6 +302,18 @@ class ElectricityCostSensor(SensorEntity):
             SENSOR_COST_MONTH: stats.cost_this_month,
             SENSOR_COST_YEAR: stats.cost_this_year,
             SENSOR_COST_TOTAL: stats.cost_total,
+            SENSOR_COST_DAY_OFFPEAK: stats.cost_today_offpeak,
+            SENSOR_COST_DAY_PEAK: stats.cost_today_peak,
+            SENSOR_COST_MONTH_OFFPEAK: stats.cost_this_month_offpeak,
+            SENSOR_COST_MONTH_PEAK: stats.cost_this_month_peak,
+            SENSOR_COST_YEAR_OFFPEAK: stats.cost_this_year_offpeak,
+            SENSOR_COST_YEAR_PEAK: stats.cost_this_year_peak,
+            SENSOR_COST_TOTAL_OFFPEAK: stats.cost_total_offpeak,
+            SENSOR_COST_TOTAL_PEAK: stats.cost_total_peak,
+            SENSOR_ENERGY_DAY_OFFPEAK: stats.energy_today_offpeak,
+            SENSOR_ENERGY_DAY_PEAK: stats.energy_today_peak,
+            SENSOR_ENERGY_TOTAL_OFFPEAK: stats.energy_total_offpeak,
+            SENSOR_ENERGY_TOTAL_PEAK: stats.energy_total_peak,
             SENSOR_COST_MAX_DAY: stats.max_cost_day,
             SENSOR_COST_MAX_MONTH: stats.max_cost_month,
             SENSOR_COST_MAX_YEAR: stats.max_cost_year,
@@ -215,6 +344,30 @@ class ElectricityCostSensor(SensorEntity):
             base_attrs["energy_year_kwh"] = stats.energy_this_year
         elif self.sensor_type == SENSOR_COST_TOTAL:
             base_attrs["energy_total_kwh"] = stats.energy_total
+        elif self.sensor_type in (SENSOR_COST_DAY_OFFPEAK, SENSOR_ENERGY_DAY_OFFPEAK):
+            base_attrs["tariff_period"] = "offpeak"
+            base_attrs["energy_today_offpeak_kwh"] = stats.energy_today_offpeak
+        elif self.sensor_type in (SENSOR_COST_DAY_PEAK, SENSOR_ENERGY_DAY_PEAK):
+            base_attrs["tariff_period"] = "peak"
+            base_attrs["energy_today_peak_kwh"] = stats.energy_today_peak
+        elif self.sensor_type in (SENSOR_COST_MONTH_OFFPEAK,):
+            base_attrs["tariff_period"] = "offpeak"
+            base_attrs["energy_month_offpeak_kwh"] = stats.energy_this_month_offpeak
+        elif self.sensor_type in (SENSOR_COST_MONTH_PEAK,):
+            base_attrs["tariff_period"] = "peak"
+            base_attrs["energy_month_peak_kwh"] = stats.energy_this_month_peak
+        elif self.sensor_type in (SENSOR_COST_YEAR_OFFPEAK,):
+            base_attrs["tariff_period"] = "offpeak"
+            base_attrs["energy_year_offpeak_kwh"] = stats.energy_this_year_offpeak
+        elif self.sensor_type in (SENSOR_COST_YEAR_PEAK,):
+            base_attrs["tariff_period"] = "peak"
+            base_attrs["energy_year_peak_kwh"] = stats.energy_this_year_peak
+        elif self.sensor_type in (SENSOR_COST_TOTAL_OFFPEAK, SENSOR_ENERGY_TOTAL_OFFPEAK):
+            base_attrs["tariff_period"] = "offpeak"
+            base_attrs["energy_total_offpeak_kwh"] = stats.energy_total_offpeak
+        elif self.sensor_type in (SENSOR_COST_TOTAL_PEAK, SENSOR_ENERGY_TOTAL_PEAK):
+            base_attrs["tariff_period"] = "peak"
+            base_attrs["energy_total_peak_kwh"] = stats.energy_total_peak
 
         return base_attrs
 

@@ -33,13 +33,14 @@
         }
       },
       "device_add": {
-        "title": "Add First Device",
+        "title": "Add Device",
         "description": "Configure the electrical device to monitor.",
         "data": {
           "device_name": "Device name",
           "source_entity": "Source entity",
           "source_type": "Source type",
-          "source_unit": "Measurement unit (optional)"
+          "source_unit": "Measurement unit (optional)",
+          "add_another": "Add another device immediately"
         }
       }
     }
@@ -69,6 +70,10 @@
           "device_id": "Select device",
           "action": "Action"
         }
+      },
+      "delete_device": {
+        "title": "Delete Device",
+        "description": "Are you sure you want to delete the device '{device_name}'? This device and all its entities will be removed without affecting your other devices."
       },
       "edit_device": {
         "title": "Edit Device",
@@ -102,6 +107,18 @@
       "cost_month": { "name": "Cost this month" },
       "cost_year": { "name": "Cost this year" },
       "cost_total": { "name": "Total cost" },
+      "cost_day_offpeak": { "name": "Cost today (Off-peak)" },
+      "cost_day_peak": { "name": "Cost today (Peak)" },
+      "cost_month_offpeak": { "name": "Cost this month (Off-peak)" },
+      "cost_month_peak": { "name": "Cost this month (Peak)" },
+      "cost_year_offpeak": { "name": "Cost this year (Off-peak)" },
+      "cost_year_peak": { "name": "Cost this year (Peak)" },
+      "cost_total_offpeak": { "name": "Total cost (Off-peak)" },
+      "cost_total_peak": { "name": "Total cost (Peak)" },
+      "energy_day_offpeak": { "name": "Energy today (Off-peak)" },
+      "energy_day_peak": { "name": "Energy today (Peak)" },
+      "energy_total_offpeak": { "name": "Total energy (Off-peak)" },
+      "energy_total_peak": { "name": "Total energy (Peak)" },
       "cost_max_day": { "name": "Max daily cost" },
       "cost_max_month": { "name": "Max monthly cost" },
       "cost_max_year": { "name": "Max yearly cost" },

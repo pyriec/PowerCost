@@ -83,6 +83,25 @@ class DeviceStatistics:
     energy_this_year: float = 0.0
     energy_total: float = 0.0
 
+    # Off-peak / Peak breakdowns
+    cost_today_offpeak: float = 0.0
+    cost_today_peak: float = 0.0
+    cost_this_month_offpeak: float = 0.0
+    cost_this_month_peak: float = 0.0
+    cost_this_year_offpeak: float = 0.0
+    cost_this_year_peak: float = 0.0
+    cost_total_offpeak: float = 0.0
+    cost_total_peak: float = 0.0
+
+    energy_today_offpeak: float = 0.0
+    energy_today_peak: float = 0.0
+    energy_this_month_offpeak: float = 0.0
+    energy_this_month_peak: float = 0.0
+    energy_this_year_offpeak: float = 0.0
+    energy_this_year_peak: float = 0.0
+    energy_total_offpeak: float = 0.0
+    energy_total_peak: float = 0.0
+
     max_cost_day: float = 0.0
     max_cost_month: float = 0.0
     max_cost_year: float = 0.0
@@ -150,6 +169,10 @@ class DeviceStatistics:
                     self.max_cost_day = round(self.cost_today, 4)
             self.cost_today = 0.0
             self.energy_today = 0.0
+            self.cost_today_offpeak = 0.0
+            self.cost_today_peak = 0.0
+            self.energy_today_offpeak = 0.0
+            self.energy_today_peak = 0.0
             self.current_day = day_str
             changed = True
 
@@ -161,6 +184,10 @@ class DeviceStatistics:
                     self.max_cost_month = round(self.cost_this_month, 4)
             self.cost_this_month = 0.0
             self.energy_this_month = 0.0
+            self.cost_this_month_offpeak = 0.0
+            self.cost_this_month_peak = 0.0
+            self.energy_this_month_offpeak = 0.0
+            self.energy_this_month_peak = 0.0
             self.current_month = month_str
             changed = True
 
@@ -172,12 +199,26 @@ class DeviceStatistics:
                     self.max_cost_year = round(self.cost_this_year, 4)
             self.cost_this_year = 0.0
             self.energy_this_year = 0.0
+            self.cost_this_year_offpeak = 0.0
+            self.cost_this_year_peak = 0.0
+            self.energy_this_year_offpeak = 0.0
+            self.energy_this_year_peak = 0.0
             self.current_year = year_str
             changed = True
 
         return changed
 
-    def add_consumption(self, energy_kwh: float, cost: float, timestamp: datetime) -> None:
+    def add_consumption(
+        self,
+        energy_kwh: float,
+        cost: float,
+        timestamp: datetime,
+        tariff: str | None = None,
+        cost_offpeak: float | None = None,
+        cost_peak: float | None = None,
+        energy_offpeak: float | None = None,
+        energy_peak: float | None = None,
+    ) -> None:
         """Add incremental energy and cost to statistics."""
         self.rollover_if_needed(timestamp)
 
@@ -190,6 +231,36 @@ class DeviceStatistics:
         self.energy_this_month = round(self.energy_this_month + energy_kwh, 4)
         self.energy_this_year = round(self.energy_this_year + energy_kwh, 4)
         self.energy_total = round(self.energy_total + energy_kwh, 4)
+
+        # Off-peak / Peak breakdown
+        c_offpeak = cost_offpeak if cost_offpeak is not None else (cost if tariff == "offpeak" else 0.0)
+        c_peak = cost_peak if cost_peak is not None else (cost if tariff == "peak" else 0.0)
+        e_offpeak = energy_offpeak if energy_offpeak is not None else (energy_kwh if tariff == "offpeak" else 0.0)
+        e_peak = energy_peak if energy_peak is not None else (energy_kwh if tariff == "peak" else 0.0)
+
+        if c_offpeak > 0.0:
+            self.cost_today_offpeak = round(self.cost_today_offpeak + c_offpeak, 4)
+            self.cost_this_month_offpeak = round(self.cost_this_month_offpeak + c_offpeak, 4)
+            self.cost_this_year_offpeak = round(self.cost_this_year_offpeak + c_offpeak, 4)
+            self.cost_total_offpeak = round(self.cost_total_offpeak + c_offpeak, 4)
+
+        if c_peak > 0.0:
+            self.cost_today_peak = round(self.cost_today_peak + c_peak, 4)
+            self.cost_this_month_peak = round(self.cost_this_month_peak + c_peak, 4)
+            self.cost_this_year_peak = round(self.cost_this_year_peak + c_peak, 4)
+            self.cost_total_peak = round(self.cost_total_peak + c_peak, 4)
+
+        if e_offpeak > 0.0:
+            self.energy_today_offpeak = round(self.energy_today_offpeak + e_offpeak, 4)
+            self.energy_this_month_offpeak = round(self.energy_this_month_offpeak + e_offpeak, 4)
+            self.energy_this_year_offpeak = round(self.energy_this_year_offpeak + e_offpeak, 4)
+            self.energy_total_offpeak = round(self.energy_total_offpeak + e_offpeak, 4)
+
+        if e_peak > 0.0:
+            self.energy_today_peak = round(self.energy_today_peak + e_peak, 4)
+            self.energy_this_month_peak = round(self.energy_this_month_peak + e_peak, 4)
+            self.energy_this_year_peak = round(self.energy_this_year_peak + e_peak, 4)
+            self.energy_total_peak = round(self.energy_total_peak + e_peak, 4)
 
         if self.cost_today > self.max_cost_day:
             self.max_cost_day = self.cost_today
@@ -215,6 +286,22 @@ class DeviceStatistics:
             energy_this_month=float(data.get("energy_this_month", 0.0)),
             energy_this_year=float(data.get("energy_this_year", 0.0)),
             energy_total=float(data.get("energy_total", 0.0)),
+            cost_today_offpeak=float(data.get("cost_today_offpeak", 0.0)),
+            cost_today_peak=float(data.get("cost_today_peak", 0.0)),
+            cost_this_month_offpeak=float(data.get("cost_this_month_offpeak", 0.0)),
+            cost_this_month_peak=float(data.get("cost_this_month_peak", 0.0)),
+            cost_this_year_offpeak=float(data.get("cost_this_year_offpeak", 0.0)),
+            cost_this_year_peak=float(data.get("cost_this_year_peak", 0.0)),
+            cost_total_offpeak=float(data.get("cost_total_offpeak", 0.0)),
+            cost_total_peak=float(data.get("cost_total_peak", 0.0)),
+            energy_today_offpeak=float(data.get("energy_today_offpeak", 0.0)),
+            energy_today_peak=float(data.get("energy_today_peak", 0.0)),
+            energy_this_month_offpeak=float(data.get("energy_this_month_offpeak", 0.0)),
+            energy_this_month_peak=float(data.get("energy_this_month_peak", 0.0)),
+            energy_this_year_offpeak=float(data.get("energy_this_year_offpeak", 0.0)),
+            energy_this_year_peak=float(data.get("energy_this_year_peak", 0.0)),
+            energy_total_offpeak=float(data.get("energy_total_offpeak", 0.0)),
+            energy_total_peak=float(data.get("energy_total_peak", 0.0)),
             max_cost_day=float(data.get("max_cost_day", 0.0)),
             max_cost_month=float(data.get("max_cost_month", 0.0)),
             max_cost_year=float(data.get("max_cost_year", 0.0)),

@@ -28,6 +28,19 @@ class PriceInterval:
     start: datetime
     end: datetime
     price: float
+    tariff: str | None = None  # "offpeak", "peak", or None
+
+
+@dataclass
+class CostResult:
+    """Detailed cost and energy breakdown across tariff periods."""
+
+    total_cost: float
+    cost_offpeak: float = 0.0
+    cost_peak: float = 0.0
+    energy_offpeak: float = 0.0
+    energy_peak: float = 0.0
+
 
 
 def parse_float_state(state: State | None) -> float | None:
@@ -89,6 +102,26 @@ class PricingManager:
 
         return None
 
+    def get_current_tariff(self) -> str | None:
+        """Get the current applicable tariff ('offpeak' or 'peak') in peak/offpeak mode."""
+        if self.config.mode != PRICING_MODE_PEAK_OFFPEAK:
+            return None
+        if not self.config.tariff_mode_entity:
+            return None
+        mode_state = self.hass.states.get(self.config.tariff_mode_entity)
+        if not mode_state or mode_state.state in ("unavailable", "unknown"):
+            return None
+
+        current_mode = str(mode_state.state).strip().lower()
+        offpeak_target = str(self.config.offpeak_state or "").strip().lower()
+        peak_target = str(self.config.peak_state or "").strip().lower()
+
+        if current_mode == offpeak_target:
+            return "offpeak"
+        if current_mode == peak_target:
+            return "peak"
+        return None
+
     def calculate_cost_for_time_range(
         self,
         start_time: datetime,
@@ -97,26 +130,72 @@ class PricingManager:
         price_intervals: list[PriceInterval] | None = None,
         fallback_price: float | None = None,
     ) -> float:
-        """Calculate cost by slicing consumption across price intervals.
+        """Calculate total cost by slicing consumption across price intervals."""
+        detailed = self.calculate_detailed_cost_for_time_range(
+            start_time=start_time,
+            end_time=end_time,
+            energy_kwh=energy_kwh,
+            price_intervals=price_intervals,
+            fallback_price=fallback_price,
+        )
+        return detailed.total_cost
 
-        If energy occurs across price changes, it splits the energy proportionally
-        to the duration of each sub-interval.
-        """
+    def calculate_detailed_cost_for_time_range(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        energy_kwh: float,
+        price_intervals: list[PriceInterval] | None = None,
+        fallback_price: float | None = None,
+    ) -> CostResult:
+        """Calculate detailed cost and energy breakdown across price intervals."""
         if energy_kwh <= 0:
-            return 0.0
+            return CostResult(total_cost=0.0)
 
         total_duration = (end_time - start_time).total_seconds()
         if total_duration <= 0:
             # Point in time: use current or fallback price
             p = fallback_price if fallback_price is not None else self.get_current_price()
-            return round(energy_kwh * (p or 0.0), 4)
+            cost = round(energy_kwh * (p or 0.0), 4)
+            t = self.get_current_tariff()
+            if t == "offpeak":
+                return CostResult(
+                    total_cost=cost,
+                    cost_offpeak=cost,
+                    energy_offpeak=round(energy_kwh, 4),
+                )
+            if t == "peak":
+                return CostResult(
+                    total_cost=cost,
+                    cost_peak=cost,
+                    energy_peak=round(energy_kwh, 4),
+                )
+            return CostResult(total_cost=cost)
 
         if not price_intervals:
             p = fallback_price if fallback_price is not None else self.get_current_price()
-            return round(energy_kwh * (p or 0.0), 4)
+            cost = round(energy_kwh * (p or 0.0), 4)
+            t = self.get_current_tariff()
+            if t == "offpeak":
+                return CostResult(
+                    total_cost=cost,
+                    cost_offpeak=cost,
+                    energy_offpeak=round(energy_kwh, 4),
+                )
+            if t == "peak":
+                return CostResult(
+                    total_cost=cost,
+                    cost_peak=cost,
+                    energy_peak=round(energy_kwh, 4),
+                )
+            return CostResult(total_cost=cost)
 
         # Slice the period against price intervals
         total_cost = 0.0
+        cost_offpeak = 0.0
+        cost_peak = 0.0
+        energy_offpeak = 0.0
+        energy_peak = 0.0
         covered_duration = 0.0
 
         for interval in price_intervals:
@@ -127,17 +206,41 @@ class PricingManager:
             if overlap_end > overlap_start:
                 sub_duration = (overlap_end - overlap_start).total_seconds()
                 sub_energy = energy_kwh * (sub_duration / total_duration)
-                total_cost += sub_energy * interval.price
+                sub_cost = sub_energy * interval.price
+                total_cost += sub_cost
                 covered_duration += sub_duration
+
+                if interval.tariff == "offpeak":
+                    cost_offpeak += sub_cost
+                    energy_offpeak += sub_energy
+                elif interval.tariff == "peak":
+                    cost_peak += sub_cost
+                    energy_peak += sub_energy
 
         # Any unallocated duration uses fallback price
         remaining_duration = total_duration - covered_duration
         if remaining_duration > 1.0:  # Tolerance of 1 sec
             default_p = fallback_price if fallback_price is not None else (self.get_current_price() or 0.0)
             sub_energy = energy_kwh * (remaining_duration / total_duration)
-            total_cost += sub_energy * default_p
+            sub_cost = sub_energy * default_p
+            total_cost += sub_cost
 
-        return round(total_cost, 4)
+            t = self.get_current_tariff()
+            if t == "offpeak":
+                cost_offpeak += sub_cost
+                energy_offpeak += sub_energy
+            elif t == "peak":
+                cost_peak += sub_cost
+                energy_peak += sub_energy
+
+        return CostResult(
+            total_cost=round(total_cost, 4),
+            cost_offpeak=round(cost_offpeak, 4),
+            cost_peak=round(cost_peak, 4),
+            energy_offpeak=round(energy_offpeak, 4),
+            energy_peak=round(energy_peak, 4),
+        )
+
 
 
 def extract_timeline_intervals(
@@ -218,6 +321,7 @@ def extract_timeline_intervals(
         mid = t0 + (t1 - t0) / 2
 
         applicable_price: float | None = None
+        tariff: str | None = None
 
         if mode == PRICING_MODE_VARIABLE:
             applicable_price = get_val_at(price_states, mid)
@@ -225,10 +329,12 @@ def extract_timeline_intervals(
             current_mode = get_mode_at(mode_states, mid)
             if current_mode == offpeak_t:
                 applicable_price = get_val_at(offpeak_states, mid)
+                tariff = "offpeak"
             elif current_mode == peak_t:
                 applicable_price = get_val_at(peak_states, mid)
+                tariff = "peak"
 
         if applicable_price is not None and applicable_price >= 0:
-            intervals.append(PriceInterval(start=t0, end=t1, price=applicable_price))
+            intervals.append(PriceInterval(start=t0, end=t1, price=applicable_price, tariff=tariff))
 
     return intervals

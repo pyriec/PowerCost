@@ -243,14 +243,22 @@ class ElectricityCostCoordinator:
             end_utc = datetime.fromtimestamp(curr_ts, tz=timezone.utc)
 
             current_price = self.pricing_manager.get_current_price() or 0.0
-            cost = self.pricing_manager.calculate_cost_for_time_range(
+            detailed = self.pricing_manager.calculate_detailed_cost_for_time_range(
                 start_time=start_utc,
                 end_time=end_utc,
                 energy_kwh=energy_kwh,
                 fallback_price=current_price,
             )
 
-            stats.add_consumption(energy_kwh, cost, now_local)
+            stats.add_consumption(
+                energy_kwh=energy_kwh,
+                cost=detailed.total_cost,
+                timestamp=now_local,
+                cost_offpeak=detailed.cost_offpeak,
+                cost_peak=detailed.cost_peak,
+                energy_offpeak=detailed.energy_offpeak,
+                energy_peak=detailed.energy_peak,
+            )
             await self.async_save_data()
 
         self.async_update_listeners()

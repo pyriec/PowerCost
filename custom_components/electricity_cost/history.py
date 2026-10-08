@@ -22,9 +22,17 @@ from .const import (
     PRICING_MODE_PEAK_OFFPEAK,
     PRICING_MODE_VARIABLE,
     SENSOR_COST_DAY,
+    SENSOR_COST_DAY_OFFPEAK,
+    SENSOR_COST_DAY_PEAK,
     SENSOR_COST_MONTH,
+    SENSOR_COST_MONTH_OFFPEAK,
+    SENSOR_COST_MONTH_PEAK,
     SENSOR_COST_TOTAL,
+    SENSOR_COST_TOTAL_OFFPEAK,
+    SENSOR_COST_TOTAL_PEAK,
     SENSOR_COST_YEAR,
+    SENSOR_COST_YEAR_OFFPEAK,
+    SENSOR_COST_YEAR_PEAK,
     SOURCE_TYPE_POWER,
 )
 from .models import DeviceConfig, DeviceStatistics, PricingConfig
@@ -75,6 +83,17 @@ class HistoryRebuilder:
         """Initialize history rebuilder."""
         self.hass = hass
         self.coordinator = coordinator
+
+    async def _async_run_recorder_job(self, target: Any, *args: Any) -> Any:
+        """Run a database query using the recorder's dedicated executor."""
+        try:
+            from homeassistant.components.recorder import get_instance
+            rec = get_instance(self.hass)
+            if rec:
+                return await rec.async_add_executor_job(target, *args)
+        except Exception:
+            pass
+        return await self.hass.async_add_executor_job(target, *args)
 
     async def async_rebuild_device(
         self,
@@ -140,7 +159,7 @@ class HistoryRebuilder:
         pricing_entities = [e for e in entity_ids_to_query if e != device_cfg.source_entity]
         price_states_all: dict[str, list[State]] = {}
         if pricing_entities:
-            price_states_all = await self.hass.async_add_executor_job(
+            price_states_all = await self._async_run_recorder_job(
                 self._fetch_history,
                 start_date,
                 end_date,
@@ -164,8 +183,10 @@ class HistoryRebuilder:
         unit = device_cfg.source_unit
         total_records_processed = 0
 
-        # Hourly cost delta accumulator for retroactive statistics injection
+        # Hourly cost delta accumulators for retroactive statistics injection
         hourly_cost_deltas: dict[datetime, float] = {}
+        hourly_cost_deltas_offpeak: dict[datetime, float] = {}
+        hourly_cost_deltas_peak: dict[datetime, float] = {}
 
         last_val: float | None = None
         last_ts: float | None = None
@@ -184,7 +205,7 @@ class HistoryRebuilder:
             )
 
             # A. Fetch raw states for this chunk
-            chunk_history = await self.hass.async_add_executor_job(
+            chunk_history = await self._async_run_recorder_job(
                 self._fetch_history,
                 chunk_start,
                 chunk_end,
@@ -195,7 +216,7 @@ class HistoryRebuilder:
             # B. If raw states missing in this chunk, try Long-Term Statistics (LTS)
             lts_stats: list[dict[str, Any]] = []
             if not source_states:
-                lts_stats = await self.hass.async_add_executor_job(
+                lts_stats = await self._async_run_recorder_job(
                     self._fetch_statistics,
                     chunk_start,
                     chunk_end,
@@ -234,18 +255,34 @@ class HistoryRebuilder:
                             prev_state_val = curr_st
 
                     if energy_delta > 0.0:
-                        step_cost = self.coordinator.pricing_manager.calculate_cost_for_time_range(
+                        detailed = self.coordinator.pricing_manager.calculate_detailed_cost_for_time_range(
                             start_time=t_start,
                             end_time=t_end,
                             energy_kwh=energy_delta,
                             price_intervals=price_intervals,
                             fallback_price=fallback_price,
                         )
-                        stats.add_consumption(energy_delta, step_cost, dt_local)
+                        stats.add_consumption(
+                            energy_kwh=energy_delta,
+                            cost=detailed.total_cost,
+                            timestamp=dt_local,
+                            cost_offpeak=detailed.cost_offpeak,
+                            cost_peak=detailed.cost_peak,
+                            energy_offpeak=detailed.energy_offpeak,
+                            energy_peak=detailed.energy_peak,
+                        )
 
                         # Record for hourly bucket
                         h_bucket = t_end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-                        hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + step_cost
+                        hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + detailed.total_cost
+                        if detailed.cost_offpeak > 0:
+                            hourly_cost_deltas_offpeak[h_bucket] = (
+                                hourly_cost_deltas_offpeak.get(h_bucket, 0.0) + detailed.cost_offpeak
+                            )
+                        if detailed.cost_peak > 0:
+                            hourly_cost_deltas_peak[h_bucket] = (
+                                hourly_cost_deltas_peak.get(h_bucket, 0.0) + detailed.cost_peak
+                            )
 
                     total_records_processed += 1
 
@@ -278,18 +315,34 @@ class HistoryRebuilder:
                             )
 
                         if energy_delta > 0.0:
-                            step_cost = self.coordinator.pricing_manager.calculate_cost_for_time_range(
+                            detailed = self.coordinator.pricing_manager.calculate_detailed_cost_for_time_range(
                                 start_time=step_start_utc,
                                 end_time=step_end_utc,
                                 energy_kwh=energy_delta,
                                 price_intervals=price_intervals,
                                 fallback_price=fallback_price,
                             )
-                            stats.add_consumption(energy_delta, step_cost, dt_local)
+                            stats.add_consumption(
+                                energy_kwh=energy_delta,
+                                cost=detailed.total_cost,
+                                timestamp=dt_local,
+                                cost_offpeak=detailed.cost_offpeak,
+                                cost_peak=detailed.cost_peak,
+                                energy_offpeak=detailed.energy_offpeak,
+                                energy_peak=detailed.energy_peak,
+                            )
 
                             # Record for hourly bucket
                             h_bucket = step_end_utc.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-                            hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + step_cost
+                            hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + detailed.total_cost
+                            if detailed.cost_offpeak > 0:
+                                hourly_cost_deltas_offpeak[h_bucket] = (
+                                    hourly_cost_deltas_offpeak.get(h_bucket, 0.0) + detailed.cost_offpeak
+                                )
+                            if detailed.cost_peak > 0:
+                                hourly_cost_deltas_peak[h_bucket] = (
+                                    hourly_cost_deltas_peak.get(h_bucket, 0.0) + detailed.cost_peak
+                                )
 
                     last_val = val
                     last_ts = current_ts
@@ -359,6 +412,8 @@ class HistoryRebuilder:
             start_date=start_date,
             end_date=end_date,
             hourly_cost_deltas=hourly_cost_deltas,
+            hourly_cost_deltas_offpeak=hourly_cost_deltas_offpeak,
+            hourly_cost_deltas_peak=hourly_cost_deltas_peak,
         )
 
         _LOGGER.info(
@@ -372,10 +427,17 @@ class HistoryRebuilder:
 
         # 8. Send final completion notification
         lts_info = (
-            f"\n- **Points de courbes injectés** : {imported_stats_count} points horaires (graphiques jour, mois et total à jour !)"
+            f"\n- **Points de courbes injectés** : {imported_stats_count} points horaires (graphiques jour, mois, total et HC/HP à jour !)"
             if imported_stats_count > 0
             else ""
         )
+        tariff_breakdown = ""
+        if pricing_cfg.mode == PRICING_MODE_PEAK_OFFPEAK:
+            tariff_breakdown = (
+                f"\n- **Coût Heures Creuses** : {stats.cost_total_offpeak:.2f} € ({stats.energy_total_offpeak:.2f} kWh)"
+                f"\n- **Coût Heures Pleines** : {stats.cost_total_peak:.2f} € ({stats.energy_total_peak:.2f} kWh)"
+            )
+
         _send_progress_notification(
             self.hass,
             device_id=device_id,
@@ -387,6 +449,7 @@ class HistoryRebuilder:
                 f"- **Total enregistrements traités** : {total_records_processed}\n"
                 f"- **Consommation totale** : {stats.energy_total:.2f} kWh\n"
                 f"- **Coût total calculé** : {stats.cost_total:.2f} €"
+                f"{tariff_breakdown}"
                 f"{lts_info}"
             ),
         )
@@ -400,17 +463,13 @@ class HistoryRebuilder:
             "statistics_imported": imported_stats_count,
         }
 
-    async def _async_inject_historical_statistics(
+    def _build_cumulative_curve_points(
         self,
-        device_cfg: DeviceConfig,
-        start_date: datetime,
-        end_date: datetime,
-        hourly_cost_deltas: dict[datetime, float],
-    ) -> int:
-        """Build and import historical statistics curves for Day, Month, Year, and Total sensors."""
-        start_hour = start_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        end_hour = end_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-
+        start_hour: datetime,
+        end_hour: datetime,
+        hourly_deltas: dict[datetime, float],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Build day, month, year, and total points from an hourly delta map."""
         points_day: list[dict[str, Any]] = []
         points_month: list[dict[str, Any]] = []
         points_year: list[dict[str, Any]] = []
@@ -450,7 +509,7 @@ class HistoryRebuilder:
                     running_year = 0.0
                     current_year_str = year_str
 
-            cost_delta = hourly_cost_deltas.get(curr_h, 0.0)
+            cost_delta = hourly_deltas.get(curr_h, 0.0)
             running_today += cost_delta
             running_month += cost_delta
             running_year += cost_delta
@@ -463,6 +522,25 @@ class HistoryRebuilder:
             points_total.append({**pt_common, "state": round(running_total, 4)})
 
             curr_h += timedelta(hours=1)
+
+        return points_day, points_month, points_year, points_total
+
+    async def _async_inject_historical_statistics(
+        self,
+        device_cfg: DeviceConfig,
+        start_date: datetime,
+        end_date: datetime,
+        hourly_cost_deltas: dict[datetime, float],
+        hourly_cost_deltas_offpeak: dict[datetime, float] | None = None,
+        hourly_cost_deltas_peak: dict[datetime, float] | None = None,
+    ) -> int:
+        """Build and import historical statistics curves for Day, Month, Year, and Total sensors."""
+        start_hour = start_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        end_hour = end_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+        points_day, points_month, points_year, points_total = self._build_cumulative_curve_points(
+            start_hour, end_hour, hourly_cost_deltas
+        )
 
         total_imported_points = 0
 
@@ -478,6 +556,30 @@ class HistoryRebuilder:
                 (SENSOR_COST_YEAR, f"{device_cfg.name} Coût cette année", points_year),
                 (SENSOR_COST_TOTAL, f"{device_cfg.name} Coût total", points_total),
             ]
+
+            if (
+                self.coordinator.pricing_config.mode == PRICING_MODE_PEAK_OFFPEAK
+                and hourly_cost_deltas_offpeak is not None
+                and hourly_cost_deltas_peak is not None
+            ):
+                hc_d, hc_m, hc_y, hc_t = self._build_cumulative_curve_points(
+                    start_hour, end_hour, hourly_cost_deltas_offpeak
+                )
+                hp_d, hp_m, hp_y, hp_t = self._build_cumulative_curve_points(
+                    start_hour, end_hour, hourly_cost_deltas_peak
+                )
+                mappings.extend(
+                    [
+                        (SENSOR_COST_DAY_OFFPEAK, f"{device_cfg.name} Coût aujourd'hui (Heures Creuses)", hc_d),
+                        (SENSOR_COST_MONTH_OFFPEAK, f"{device_cfg.name} Coût ce mois (Heures Creuses)", hc_m),
+                        (SENSOR_COST_YEAR_OFFPEAK, f"{device_cfg.name} Coût cette année (Heures Creuses)", hc_y),
+                        (SENSOR_COST_TOTAL_OFFPEAK, f"{device_cfg.name} Coût total (Heures Creuses)", hc_t),
+                        (SENSOR_COST_DAY_PEAK, f"{device_cfg.name} Coût aujourd'hui (Heures Pleines)", hp_d),
+                        (SENSOR_COST_MONTH_PEAK, f"{device_cfg.name} Coût ce mois (Heures Pleines)", hp_m),
+                        (SENSOR_COST_YEAR_PEAK, f"{device_cfg.name} Coût cette année (Heures Pleines)", hp_y),
+                        (SENSOR_COST_TOTAL_PEAK, f"{device_cfg.name} Coût total (Heures Pleines)", hp_t),
+                    ]
+                )
 
             for sensor_key, friendly_name, pts in mappings:
                 entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{unique_prefix}{sensor_key}")
@@ -506,6 +608,7 @@ class HistoryRebuilder:
             metadata: dict[str, Any] = {
                 "has_mean": False,
                 "has_sum": True,
+                "mean_type": None,
                 "name": name,
                 "source": "recorder",
                 "statistic_id": entity_id,

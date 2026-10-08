@@ -210,6 +210,9 @@ class ElectricityCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
             self._devices.append(device_entry)
 
+            if user_input.get("add_another"):
+                return await self.async_step_device_add()
+
             # Create entry with pricing and device list
             return self.async_create_entry(
                 title="PowerCost",
@@ -254,6 +257,7 @@ class ElectricityCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
+                    vol.Optional("add_another", default=False): selector.BooleanSelector(),
                 }
             ),
         )
@@ -270,10 +274,18 @@ class ElectricityCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for PowerCost."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+    def __init__(self, config_entry: config_entries.ConfigEntry | None = None) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        self._custom_config_entry = config_entry
         self._selected_device_id: str | None = None
+
+    @property
+    def _entry(self) -> config_entries.ConfigEntry:
+        """Return config entry safely without throwing AttributeError."""
+        try:
+            return self.config_entry
+        except (AttributeError, KeyError):
+            return self._custom_config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -296,14 +308,14 @@ class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
                 CONF_SOURCE_TYPE: user_input[CONF_SOURCE_TYPE],
                 CONF_SOURCE_UNIT: user_input.get(CONF_SOURCE_UNIT),
             }
-            current_devices = list(self.config_entry.data.get(CONF_DEVICES, []))
+            current_devices = list(self._entry.data.get(CONF_DEVICES, []))
             current_devices.append(new_device)
 
-            new_data = dict(self.config_entry.data)
+            new_data = dict(self._entry.data)
             new_data[CONF_DEVICES] = current_devices
 
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            self.hass.config_entries.async_update_entry(self._entry, data=new_data)
+            await self.hass.config_entries.async_reload(self._entry.entry_id)
             return self.async_create_entry(title="", data={})
 
         return self.async_show_form(
@@ -349,7 +361,7 @@ class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Select a device to edit or remove."""
-        devices = self.config_entry.data.get(CONF_DEVICES, [])
+        devices = self._entry.data.get(CONF_DEVICES, [])
         if not devices:
             return self.async_abort(reason="no_devices")
 
@@ -357,12 +369,7 @@ class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
             self._selected_device_id = user_input[CONF_DEVICE_ID]
             action = user_input["action"]
             if action == "delete":
-                new_devices = [d for d in devices if d[CONF_DEVICE_ID] != self._selected_device_id]
-                new_data = dict(self.config_entry.data)
-                new_data[CONF_DEVICES] = new_devices
-                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-                return self.async_create_entry(title="", data={})
+                return await self.async_step_delete_device()
             return await self.async_step_edit_device()
 
         device_options = [
@@ -374,7 +381,7 @@ class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
             step_id="manage_device",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_DEVICE_ID): selector.SelectSelector(
+                    vol.Required(CONF_DEVICE_ID, default=devices[0][CONF_DEVICE_ID]): selector.SelectSelector(
                         selector.SelectSelectorConfig(options=device_options)
                     ),
                     vol.Required("action", default="edit"): selector.SelectSelector(
@@ -389,11 +396,56 @@ class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
             ),
         )
 
+    async def async_step_delete_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Confirm and delete a single device from the entry."""
+        devices = self._entry.data.get(CONF_DEVICES, [])
+        device = next((d for d in devices if d[CONF_DEVICE_ID] == self._selected_device_id), None)
+        if not device:
+            return self.async_abort(reason="device_not_found")
+
+        if user_input is not None:
+            dev_id_to_delete = self._selected_device_id
+            new_devices = [d for d in devices if d[CONF_DEVICE_ID] != dev_id_to_delete]
+            new_data = dict(self._entry.data)
+            new_data[CONF_DEVICES] = new_devices
+
+            # Clean up device registry & entity registry
+            try:
+                from homeassistant.helpers import device_registry as dr
+
+                dev_reg = dr.async_get(self.hass)
+                dev_entry = dev_reg.async_get_device(
+                    identifiers={(DOMAIN, f"{self._entry.entry_id}_{dev_id_to_delete}")}
+                )
+                if dev_entry:
+                    dev_reg.async_remove_device(dev_entry.id)
+            except Exception as err:
+                _LOGGER.debug("Could not remove device registry entry: %s", err)
+
+            # Clean up storage for deleted device
+            if DOMAIN in self.hass.data and self._entry.entry_id in self.hass.data[DOMAIN]:
+                coordinator = self.hass.data[DOMAIN][self._entry.entry_id]["coordinator"]
+                coordinator.statistics.pop(dev_id_to_delete, None)
+                coordinator.devices.pop(dev_id_to_delete, None)
+                await coordinator.async_save_data()
+
+            self.hass.config_entries.async_update_entry(self._entry, data=new_data)
+            await self.hass.config_entries.async_reload(self._entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        return self.async_show_form(
+            step_id="delete_device",
+            description_placeholders={"device_name": device[CONF_DEVICE_NAME]},
+            data_schema=vol.Schema({}),
+        )
+
     async def async_step_edit_device(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Edit an existing device."""
-        devices = self.config_entry.data.get(CONF_DEVICES, [])
+        devices = self._entry.data.get(CONF_DEVICES, [])
         device = next((d for d in devices if d[CONF_DEVICE_ID] == self._selected_device_id), None)
         if not device:
             return self.async_abort(reason="device_not_found")
@@ -410,98 +462,101 @@ class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
                 updated_device if d[CONF_DEVICE_ID] == self._selected_device_id else d
                 for d in devices
             ]
-            new_data = dict(self.config_entry.data)
+            new_data = dict(self._entry.data)
             new_data[CONF_DEVICES] = new_devices
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            self.hass.config_entries.async_update_entry(self._entry, data=new_data)
+            await self.hass.config_entries.async_reload(self._entry.entry_id)
             return self.async_create_entry(title="", data={})
+
+        schema_dict: dict[Any, Any] = {
+            vol.Required(CONF_DEVICE_NAME, default=device[CONF_DEVICE_NAME]): selector.TextSelector(),
+            vol.Required(CONF_SOURCE_ENTITY, default=device[CONF_SOURCE_ENTITY]): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor")
+            ),
+            vol.Required(CONF_SOURCE_TYPE, default=device[CONF_SOURCE_TYPE]): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value=SOURCE_TYPE_POWER, label="Puissance instantanée"),
+                        selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_DAILY, label="Énergie quotidienne"),
+                        selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_MONTHLY, label="Énergie mensuelle"),
+                        selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_YEARLY, label="Énergie annuelle"),
+                        selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_TOTAL, label="Énergie totale"),
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+        }
+
+        unit_selector = selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=[
+                    selector.SelectOptionDict(value="W", label="W"),
+                    selector.SelectOptionDict(value="kW", label="kW"),
+                    selector.SelectOptionDict(value="Wh", label="Wh"),
+                    selector.SelectOptionDict(value="kWh", label="kWh"),
+                    selector.SelectOptionDict(value="MWh", label="MWh"),
+                ],
+                custom_value=True,
+                mode=selector.SelectSelectorMode.DROPDOWN,
+            )
+        )
+        if device.get(CONF_SOURCE_UNIT):
+            schema_dict[vol.Optional(CONF_SOURCE_UNIT, default=device[CONF_SOURCE_UNIT])] = unit_selector
+        else:
+            schema_dict[vol.Optional(CONF_SOURCE_UNIT)] = unit_selector
 
         return self.async_show_form(
             step_id="edit_device",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_DEVICE_NAME, default=device[CONF_DEVICE_NAME]): selector.TextSelector(),
-                    vol.Required(CONF_SOURCE_ENTITY, default=device[CONF_SOURCE_ENTITY]): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Required(CONF_SOURCE_TYPE, default=device[CONF_SOURCE_TYPE]): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                selector.SelectOptionDict(value=SOURCE_TYPE_POWER, label="Puissance instantanée"),
-                                selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_DAILY, label="Énergie quotidienne"),
-                                selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_MONTHLY, label="Énergie mensuelle"),
-                                selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_YEARLY, label="Énergie annuelle"),
-                                selector.SelectOptionDict(value=SOURCE_TYPE_ENERGY_TOTAL, label="Énergie totale"),
-                            ]
-                        )
-                    ),
-                    vol.Optional(CONF_SOURCE_UNIT, default=device.get(CONF_SOURCE_UNIT)): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                selector.SelectOptionDict(value="W", label="W"),
-                                selector.SelectOptionDict(value="kW", label="kW"),
-                                selector.SelectOptionDict(value="Wh", label="Wh"),
-                                selector.SelectOptionDict(value="kWh", label="kWh"),
-                                selector.SelectOptionDict(value="MWh", label="MWh"),
-                            ],
-                            custom_value=True,
-                        )
-                    ),
-                }
-            ),
+            data_schema=vol.Schema(schema_dict),
         )
 
     async def async_step_pricing(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Reconfigure global pricing settings."""
-        entry_data = self.config_entry.data
+        entry_data = self._entry.data
         current_mode = entry_data.get(CONF_PRICING_MODE, PRICING_MODE_VARIABLE)
 
         if user_input is not None:
-            new_data = dict(self.config_entry.data)
+            new_data = dict(self._entry.data)
             new_data.update(user_input)
-            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            self.hass.config_entries.async_update_entry(self._entry, data=new_data)
+            await self.hass.config_entries.async_reload(self._entry.entry_id)
             return self.async_create_entry(title="", data={})
 
         if current_mode == PRICING_MODE_VARIABLE:
+            schema_dict: dict[Any, Any] = {}
+            var_price = entry_data.get(CONF_VARIABLE_PRICE_ENTITY)
+            if var_price:
+                schema_dict[vol.Required(CONF_VARIABLE_PRICE_ENTITY, default=var_price)] = (
+                    selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
+                )
+            else:
+                schema_dict[vol.Required(CONF_VARIABLE_PRICE_ENTITY)] = (
+                    selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
+                )
             return self.async_show_form(
                 step_id="pricing",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(
-                            CONF_VARIABLE_PRICE_ENTITY,
-                            default=entry_data.get(CONF_VARIABLE_PRICE_ENTITY),
-                        ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-                    }
-                ),
+                data_schema=vol.Schema(schema_dict),
             )
+
+        fields = [
+            (CONF_OFFPEAK_PRICE_ENTITY, selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))),
+            (CONF_PEAK_PRICE_ENTITY, selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))),
+            (CONF_TARIFF_MODE_ENTITY, selector.EntitySelector()),
+            (CONF_OFFPEAK_STATE, selector.TextSelector()),
+            (CONF_PEAK_STATE, selector.TextSelector()),
+        ]
+        schema_dict = {}
+        for key, sel in fields:
+            val = entry_data.get(key)
+            if val is not None:
+                schema_dict[vol.Required(key, default=val)] = sel
+            else:
+                schema_dict[vol.Required(key)] = sel
 
         return self.async_show_form(
             step_id="pricing",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_OFFPEAK_PRICE_ENTITY,
-                        default=entry_data.get(CONF_OFFPEAK_PRICE_ENTITY),
-                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-                    vol.Required(
-                        CONF_PEAK_PRICE_ENTITY,
-                        default=entry_data.get(CONF_PEAK_PRICE_ENTITY),
-                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-                    vol.Required(
-                        CONF_TARIFF_MODE_ENTITY,
-                        default=entry_data.get(CONF_TARIFF_MODE_ENTITY),
-                    ): selector.EntitySelector(),
-                    vol.Required(
-                        CONF_OFFPEAK_STATE,
-                        default=entry_data.get(CONF_OFFPEAK_STATE),
-                    ): selector.TextSelector(),
-                    vol.Required(
-                        CONF_PEAK_STATE,
-                        default=entry_data.get(CONF_PEAK_STATE),
-                    ): selector.TextSelector(),
-                }
-            ),
+            data_schema=vol.Schema(schema_dict),
         )
+

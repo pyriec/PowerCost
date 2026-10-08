@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import TYPE_CHECKING, Any
@@ -17,8 +18,13 @@ from .calculations import (
     normalize_power_to_kw,
 )
 from .const import (
+    DOMAIN,
     PRICING_MODE_PEAK_OFFPEAK,
     PRICING_MODE_VARIABLE,
+    SENSOR_COST_DAY,
+    SENSOR_COST_MONTH,
+    SENSOR_COST_TOTAL,
+    SENSOR_COST_YEAR,
     SOURCE_TYPE_POWER,
 )
 from .models import DeviceConfig, DeviceStatistics, PricingConfig
@@ -153,10 +159,13 @@ class HistoryRebuilder:
             end_bound=end_date,
         )
 
-        # Reconstruct statistics chronologically across all chunks
+        # Runtime structures
         stats = DeviceStatistics(device_id=device_id)
         unit = device_cfg.source_unit
         total_records_processed = 0
+
+        # Hourly cost delta accumulator for retroactive statistics injection
+        hourly_cost_deltas: dict[datetime, float] = {}
 
         last_val: float | None = None
         last_ts: float | None = None
@@ -234,6 +243,10 @@ class HistoryRebuilder:
                         )
                         stats.add_consumption(energy_delta, step_cost, dt_local)
 
+                        # Record for hourly bucket
+                        h_bucket = t_end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+                        hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + step_cost
+
                     total_records_processed += 1
 
             # Replay raw states
@@ -273,6 +286,10 @@ class HistoryRebuilder:
                                 fallback_price=fallback_price,
                             )
                             stats.add_consumption(energy_delta, step_cost, dt_local)
+
+                            # Record for hourly bucket
+                            h_bucket = step_end_utc.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+                            hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + step_cost
 
                     last_val = val
                     last_ts = current_ts
@@ -336,26 +353,41 @@ class HistoryRebuilder:
         await self.coordinator.async_save_data()
         self.coordinator.async_update_listeners()
 
+        # 7. Inject retroactive statistics curves into Home Assistant Long-Term Statistics
+        imported_stats_count = await self._async_inject_historical_statistics(
+            device_cfg=device_cfg,
+            start_date=start_date,
+            end_date=end_date,
+            hourly_cost_deltas=hourly_cost_deltas,
+        )
+
         _LOGGER.info(
-            "Rebuild complete for %s. Total cost: %.2f EUR, Total energy: %.2f kWh across %d records",
+            "Rebuild complete for %s. Total cost: %.2f EUR, Total energy: %.2f kWh across %d records. Imported %d LTS points.",
             device_cfg.name,
             stats.cost_total,
             stats.energy_total,
             total_records_processed,
+            imported_stats_count,
         )
 
-        # 7. Send final completion notification
+        # 8. Send final completion notification
+        lts_info = (
+            f"\n- **Points de courbes injectés** : {imported_stats_count} points horaires (graphiques jour, mois et total à jour !)"
+            if imported_stats_count > 0
+            else ""
+        )
         _send_progress_notification(
             self.hass,
             device_id=device_id,
             title="PowerCost - Historique reconstruit avec succès",
             message=(
                 f"✅ **Reconstruction terminée pour {device_cfg.name}**\n\n"
-                f"- **Période** : du {start_date.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}\n"
+                f"- **Période totale** : du {start_date.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}\n"
                 f"- **Tranches traitées** : {num_chunks}/{num_chunks} (100%)\n"
                 f"- **Total enregistrements traités** : {total_records_processed}\n"
                 f"- **Consommation totale** : {stats.energy_total:.2f} kWh\n"
                 f"- **Coût total calculé** : {stats.cost_total:.2f} €"
+                f"{lts_info}"
             ),
         )
 
@@ -365,7 +397,133 @@ class HistoryRebuilder:
             "cost_total": stats.cost_total,
             "energy_total": stats.energy_total,
             "records_processed": total_records_processed,
+            "statistics_imported": imported_stats_count,
         }
+
+    async def _async_inject_historical_statistics(
+        self,
+        device_cfg: DeviceConfig,
+        start_date: datetime,
+        end_date: datetime,
+        hourly_cost_deltas: dict[datetime, float],
+    ) -> int:
+        """Build and import historical statistics curves for Day, Month, Year, and Total sensors."""
+        start_hour = start_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        end_hour = end_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+        points_day: list[dict[str, Any]] = []
+        points_month: list[dict[str, Any]] = []
+        points_year: list[dict[str, Any]] = []
+        points_total: list[dict[str, Any]] = []
+
+        running_today = 0.0
+        running_month = 0.0
+        running_year = 0.0
+        running_total = 0.0
+
+        current_day_str = ""
+        current_month_str = ""
+        current_year_str = ""
+
+        curr_h = start_hour
+        while curr_h <= end_hour:
+            local_dt = dt_util.as_local(curr_h)
+            day_str = local_dt.strftime("%Y-%m-%d")
+            month_str = local_dt.strftime("%Y-%m")
+            year_str = local_dt.strftime("%Y")
+
+            if not current_day_str:
+                current_day_str = day_str
+                current_month_str = month_str
+                current_year_str = year_str
+            else:
+                # Midnight rollover: cost_today resets to 0.0
+                if day_str != current_day_str:
+                    running_today = 0.0
+                    current_day_str = day_str
+                # Month rollover: cost_month resets to 0.0
+                if month_str != current_month_str:
+                    running_month = 0.0
+                    current_month_str = month_str
+                # Year rollover: cost_year resets to 0.0
+                if year_str != current_year_str:
+                    running_year = 0.0
+                    current_year_str = year_str
+
+            cost_delta = hourly_cost_deltas.get(curr_h, 0.0)
+            running_today += cost_delta
+            running_month += cost_delta
+            running_year += cost_delta
+            running_total += cost_delta
+
+            pt_common = {"start": curr_h, "sum": round(running_total, 4)}
+            points_day.append({**pt_common, "state": round(running_today, 4)})
+            points_month.append({**pt_common, "state": round(running_month, 4)})
+            points_year.append({**pt_common, "state": round(running_year, 4)})
+            points_total.append({**pt_common, "state": round(running_total, 4)})
+
+            curr_h += timedelta(hours=1)
+
+        total_imported_points = 0
+
+        try:
+            from homeassistant.helpers import entity_registry as er
+
+            ent_reg = er.async_get(self.hass)
+            unique_prefix = f"{self.coordinator.entry_id}_{device_cfg.device_id}_"
+
+            mappings = [
+                (SENSOR_COST_DAY, f"{device_cfg.name} Coût aujourd'hui", points_day),
+                (SENSOR_COST_MONTH, f"{device_cfg.name} Coût ce mois", points_month),
+                (SENSOR_COST_YEAR, f"{device_cfg.name} Coût cette année", points_year),
+                (SENSOR_COST_TOTAL, f"{device_cfg.name} Coût total", points_total),
+            ]
+
+            for sensor_key, friendly_name, pts in mappings:
+                entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{unique_prefix}{sensor_key}")
+                if entity_id and pts:
+                    await self._async_import_sensor_stats(entity_id, friendly_name, pts)
+                    total_imported_points += len(pts)
+
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.warning("Could not inject statistics for %s: %s", device_cfg.name, err)
+
+        return total_imported_points
+
+    async def _async_import_sensor_stats(
+        self,
+        entity_id: str,
+        name: str,
+        points: list[dict[str, Any]],
+    ) -> None:
+        """Import statistics data points into Home Assistant recorder."""
+        if not points or not entity_id:
+            return
+
+        try:
+            from homeassistant.components.recorder.statistics import async_import_statistics
+
+            metadata: dict[str, Any] = {
+                "has_mean": False,
+                "has_sum": True,
+                "name": name,
+                "source": "recorder",
+                "statistic_id": entity_id,
+                "unit_of_measurement": "€",
+                "unit_class": None,
+            }
+
+            res = async_import_statistics(self.hass, metadata, points)
+            if asyncio.iscoroutine(res):
+                await res
+
+            _LOGGER.info(
+                "Successfully imported %d statistic points into Home Assistant for %s",
+                len(points),
+                entity_id,
+            )
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.warning("Could not import statistics for %s: %s", entity_id, err)
 
     def _fetch_history(
         self,

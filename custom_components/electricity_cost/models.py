@@ -7,6 +7,13 @@ from datetime import datetime
 from typing import Any
 
 from .const import (
+    CONF_OFFPEAK_PRICE_ENTITY,
+    CONF_OFFPEAK_STATE,
+    CONF_PEAK_PRICE_ENTITY,
+    CONF_PEAK_STATE,
+    CONF_PRICING_MODE,
+    CONF_TARIFF_MODE_ENTITY,
+    CONF_VARIABLE_PRICE_ENTITY,
     PRICING_MODE_VARIABLE,
     SOURCE_TYPE_POWER,
 )
@@ -28,18 +35,20 @@ class PricingConfig:
     def from_dict(cls, data: dict[str, Any]) -> PricingConfig:
         """Create from dictionary."""
         return cls(
-            mode=data.get("mode", PRICING_MODE_VARIABLE),
-            variable_price_entity=data.get("variable_price_entity"),
-            offpeak_price_entity=data.get("offpeak_price_entity"),
-            peak_price_entity=data.get("peak_price_entity"),
-            tariff_mode_entity=data.get("tariff_mode_entity"),
-            offpeak_state=data.get("offpeak_state"),
-            peak_state=data.get("peak_state"),
+            mode=data.get(CONF_PRICING_MODE) or data.get("mode", PRICING_MODE_VARIABLE),
+            variable_price_entity=data.get(CONF_VARIABLE_PRICE_ENTITY) or data.get("variable_price_entity"),
+            offpeak_price_entity=data.get(CONF_OFFPEAK_PRICE_ENTITY) or data.get("offpeak_price_entity"),
+            peak_price_entity=data.get(CONF_PEAK_PRICE_ENTITY) or data.get("peak_price_entity"),
+            tariff_mode_entity=data.get(CONF_TARIFF_MODE_ENTITY) or data.get("tariff_mode_entity"),
+            offpeak_state=data.get(CONF_OFFPEAK_STATE) or data.get("offpeak_state"),
+            peak_state=data.get(CONF_PEAK_STATE) or data.get("peak_state"),
         )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
-        return asdict(self)
+        res = asdict(self)
+        res[CONF_PRICING_MODE] = self.mode
+        return res
 
 
 @dataclass

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 import pytest
 
-from custom_components.electricity_cost.models import DeviceStatistics
+from custom_components.electricity_cost.models import DeviceStatistics, PricingConfig
 
 
 def test_device_statistics_add_consumption():
@@ -129,4 +129,39 @@ def test_device_statistics_serialization():
     assert restored.cost_total_peak == 20.0
     assert restored.energy_today_offpeak == 10.0
     assert restored.energy_total_peak == 150.0
+
+
+def test_pricing_config_from_dict():
+    """Test PricingConfig deserialization with pricing_mode and mode."""
+    # From config entry dictionary with CONF_PRICING_MODE
+    cfg = PricingConfig.from_dict({
+        "pricing_mode": "peak_offpeak",
+        "offpeak_price_entity": "sensor.hc",
+        "peak_price_entity": "sensor.hp",
+        "tariff_mode_entity": "sensor.mode",
+        "offpeak_state": "HEURE CREUSE",
+        "peak_state": "HEURE PLEINE",
+    })
+    assert cfg.mode == "peak_offpeak"
+    assert cfg.offpeak_price_entity == "sensor.hc"
+    assert cfg.peak_price_entity == "sensor.hp"
+    assert cfg.tariff_mode_entity == "sensor.mode"
+    assert cfg.offpeak_state == "HEURE CREUSE"
+    assert cfg.peak_state == "HEURE PLEINE"
+
+    # Serialization roundtrip
+    d = cfg.to_dict()
+    assert d["pricing_mode"] == "peak_offpeak"
+    assert d["mode"] == "peak_offpeak"
+    restored = PricingConfig.from_dict(d)
+    assert restored.mode == "peak_offpeak"
+
+    # Legacy dictionary with "mode" key
+    cfg_legacy = PricingConfig.from_dict({
+        "mode": "variable",
+        "variable_price_entity": "sensor.spot_price",
+    })
+    assert cfg_legacy.mode == "variable"
+    assert cfg_legacy.variable_price_entity == "sensor.spot_price"
+
 

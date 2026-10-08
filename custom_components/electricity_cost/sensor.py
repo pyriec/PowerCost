@@ -1,4 +1,4 @@
-"""Sensor platform for Electricity Cost integration."""
+"""Sensor platform for PowerCost integration."""
 
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Electricity Cost sensor entities based on a config entry."""
+    """Set up PowerCost sensor entities based on a config entry."""
     coordinator: ElectricityCostCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
     entities: list[ElectricityCostSensor] = []
@@ -140,7 +140,7 @@ async def async_setup_entry(
 
 
 class ElectricityCostSensor(SensorEntity):
-    """Representation of an Electricity Cost Sensor."""
+    """Representation of an PowerCost Sensor."""
 
     _attr_has_entity_name = True
 
@@ -164,7 +164,7 @@ class ElectricityCostSensor(SensorEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{coordinator.entry_id}_{device_cfg.device_id}")},
             name=device_cfg.name,
-            manufacturer="Home Assistant Electricity Cost",
+            manufacturer="Home Assistant PowerCost",
             model=f"Source: {device_cfg.source_type}",
         )
 

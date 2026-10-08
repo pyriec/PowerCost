@@ -1,4 +1,4 @@
-"""Pricing management and interval slicing for Electricity Cost integration."""
+"""Pricing management and interval slicing for PowerCost integration."""
 
 from __future__ import annotations
 

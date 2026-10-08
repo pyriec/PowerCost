@@ -37,11 +37,17 @@
 
 ### Méthode 1 : Via HACS (Recommandée)
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=pyriec&repository=PowerCost&category=integration)
+
+#### Option 1 : En un clic (recommandé)
+Cliquez sur le bouton ci-dessus pour ouvrir directement le dépôt dans HACS sur votre instance Home Assistant et lancer le téléchargement.
+
+#### Option 2 : Ajout manuel dans HACS
 1. Ouvrez **HACS** dans votre interface Home Assistant.
 2. Cliquez sur les trois petits points en haut à droite, puis sélectionnez **Dépôts personnalisés** (*Custom repositories*).
-3. Entrez l'URL de votre dépôt GitHub (ex: `https://github.com/votre-compte/electricity_cost`).
+3. Entrez l'URL du dépôt GitHub : `https://github.com/pyriec/PowerCost`.
 4. Dans la catégorie, choisissez **Intégration** (*Integration*).
-5. Cliquez sur **Ajouter**, puis recherchez **Electricity Cost** et cliquez sur **Télécharger**.
+5. Cliquez sur **Ajouter**, puis recherchez **PowerCost** et cliquez sur **Télécharger**.
 6. Redémarrez Home Assistant.
 
 ### Méthode 2 : Installation Manuelle
@@ -64,7 +70,7 @@
 
 ## ⚙️ Configuration
 
-L'intégration se configure entièrement via l'interface graphique de Home Assistant (**Paramètres** $\rightarrow$ **Appareils et services** $\rightarrow$ **Ajouter une intégration** $\rightarrow$ rechercher **Electricity Cost**).
+L'intégration se configure entièrement via l'interface graphique de Home Assistant (**Paramètres** $\rightarrow$ **Appareils et services** $\rightarrow$ **Ajouter une intégration** $\rightarrow$ rechercher **PowerCost**).
 
 ### Étape 1 : Choix du Mode de Tarification
 
@@ -96,7 +102,7 @@ L'intégration se configure entièrement via l'interface graphique de Home Assis
 
 Pour ajouter d'autres appareils ou modifier la tarification :
 1. Allez dans **Paramètres** $\rightarrow$ **Appareils et services**.
-2. Cliquez sur **Configurer** sur la carte **Electricity Cost**.
+2. Cliquez sur **Configurer** sur la carte **PowerCost**.
 3. Choisissez :
    - **Ajouter un appareil**
    - **Modifier ou supprimer un appareil**

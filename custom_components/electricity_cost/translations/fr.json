@@ -47,7 +47,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Options Electricity Cost",
+        "title": "Options PowerCost",
         "menu_options": {
           "add_device": "Ajouter un appareil",
           "manage_device": "Modifier ou supprimer un appareil",

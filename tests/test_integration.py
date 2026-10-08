@@ -28,7 +28,7 @@ async def test_full_setup_and_sensor_updates(hass: HomeAssistant):
     """Test full integration lifecycle and sensor updates."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        title="Electricity Cost",
+        title="PowerCost",
         data={
             CONF_PRICING_MODE: PRICING_MODE_VARIABLE,
             CONF_VARIABLE_PRICE_ENTITY: "sensor.test_price",

@@ -1,4 +1,4 @@
-"""Config Flow and Options Flow for Electricity Cost."""
+"""Config Flow and Options Flow for PowerCost."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def detect_entity_states(hass: Any, entity_id: str) -> list[str]:
 
 
 class ElectricityCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Electricity Cost."""
+    """Handle a config flow for PowerCost."""
 
     VERSION = 1
 
@@ -212,7 +212,7 @@ class ElectricityCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             # Create entry with pricing and device list
             return self.async_create_entry(
-                title="Electricity Cost",
+                title="PowerCost",
                 data={
                     **self._pricing_data,
                     CONF_DEVICES: self._devices,
@@ -268,7 +268,7 @@ class ElectricityCostConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class ElectricityCostOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for Electricity Cost."""
+    """Handle options flow for PowerCost."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""

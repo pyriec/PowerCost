@@ -1,4 +1,4 @@
-"""Data models for Electricity Cost integration."""
+"""Data models for PowerCost integration."""
 
 from __future__ import annotations
 

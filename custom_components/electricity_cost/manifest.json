@@ -1,6 +1,6 @@
 {
   "domain": "electricity_cost",
-  "name": "Electricity Cost",
+  "name": "PowerCost",
   "version": "1.0.0",
   "documentation": "https://github.com/custom-components/electricity_cost",
   "issue_tracker": "https://github.com/custom-components/electricity_cost/issues",

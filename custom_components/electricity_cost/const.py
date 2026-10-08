@@ -1,4 +1,4 @@
-"""Constants for the Electricity Cost integration."""
+"""Constants for the PowerCost integration."""
 
 from typing import Final
 

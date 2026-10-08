@@ -47,7 +47,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Electricity Cost Options",
+        "title": "PowerCost Options",
         "menu_options": {
           "add_device": "Add a device",
           "manage_device": "Manage or delete a device",

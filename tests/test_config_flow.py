@@ -59,7 +59,7 @@ async def test_config_flow_variable_pricing(hass):
         },
     )
     assert result4["type"] == FlowResultType.CREATE_ENTRY
-    assert result4["title"] == "Electricity Cost"
+    assert result4["title"] == "PowerCost"
     assert result4["data"][CONF_PRICING_MODE] == PRICING_MODE_VARIABLE
     assert result4["data"][CONF_VARIABLE_PRICE_ENTITY] == "sensor.electricity_market_price"
     assert len(result4["data"][CONF_DEVICES]) == 1

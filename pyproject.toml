@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "homeassistant-electricity-cost"
 version = "1.0.0"
-description = "Home Assistant custom integration to calculate device electricity cost"
+description = "Home Assistant custom integration to calculate device PowerCost"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

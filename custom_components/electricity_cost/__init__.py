@@ -1,4 +1,4 @@
-"""The Electricity Cost integration."""
+"""The PowerCost integration."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ RESET_SERVICE_SCHEMA = vol.Schema(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Electricity Cost from a config entry."""
+    """Set up PowerCost from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     pricing_config = PricingConfig.from_dict(entry.data)

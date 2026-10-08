@@ -1,4 +1,4 @@
-"""History reconstruction service and recorder interface for Electricity Cost."""
+"""History reconstruction service and recorder interface for PowerCost."""
 
 from __future__ import annotations
 

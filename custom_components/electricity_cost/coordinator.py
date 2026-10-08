@@ -1,4 +1,4 @@
-"""Coordinator for Electricity Cost integration."""
+"""Coordinator for PowerCost integration."""
 
 from __future__ import annotations
 

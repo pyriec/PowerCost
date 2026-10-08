@@ -1,4 +1,4 @@
-"""Storage management for Electricity Cost integration."""
+"""Storage management for PowerCost integration."""
 
 from __future__ import annotations
 

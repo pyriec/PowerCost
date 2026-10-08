@@ -137,14 +137,16 @@ Chaque appareil génère automatiquement un périphérique (*Device*) regroupant
 
 ## 🛠️ Services Disponibles
 
+Les services disposent d'un **sélecteur graphique d'appareil** filtré sur PowerCost : dans **Outils de développement $\rightarrow$ Actions / Services**, vous pouvez directement choisir votre appareil dans la liste déroulante au lieu de saisir un identifiant.
+
 ### 1. `electricity_cost.rebuild_history`
 Reconstruit l'historique de consommation et de coût à partir des enregistrements de la base de données Home Assistant (Recorder).
 
-Exemple d'appel de service dans Outils de développement $\rightarrow$ Actions / Services :
+Exemple d'appel en YAML :
 ```yaml
 action: electricity_cost.rebuild_history
 data:
-  device_id: "dev_wash" # Optionnel : laisser vide si rebuild_all est vrai
+  device_id: <sélectionnez votre appareil dans la liste> # Optionnel : laisser vide ou cocher rebuild_all pour tous les appareils
   start_date: "2026-01-01 00:00:00"
   end_date: "2026-03-31 23:59:59" # Optionnel : par défaut maintenant
   rebuild_all: false
@@ -152,10 +154,12 @@ data:
 
 ### 2. `electricity_cost.reset_statistics`
 Remet à zéro les statistiques cumulées d'un appareil ou de tous les appareils.
+
+Exemple d'appel en YAML :
 ```yaml
 action: electricity_cost.reset_statistics
 data:
-  device_id: "dev_wash"
+  device_id: <sélectionnez votre appareil dans la liste> # Optionnel : laisser vide ou cocher rebuild_all pour tous les appareils
   rebuild_all: false
 ```
 

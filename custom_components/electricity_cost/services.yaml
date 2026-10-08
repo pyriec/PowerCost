@@ -3,11 +3,12 @@ rebuild_history:
   description: Reconstruit l'historique des consommations et coûts à partir des données du Recorder.
   fields:
     device_id:
-      name: Identifiant de l'appareil
-      description: Identifiant interne de l'appareil à reconstruire (laisser vide pour tous).
+      name: Appareil
+      description: Choisissez l'appareil configuré dans PowerCost (laisser vide pour tous les appareils).
       required: false
       selector:
-        text:
+        device:
+          integration: electricity_cost
     start_date:
       name: Date de début
       description: Date de début pour la reconstruction (ex 2026-01-01 00:00:00).
@@ -33,11 +34,12 @@ reset_statistics:
   description: Réinitialise les statistiques de coût et consommation d'un appareil.
   fields:
     device_id:
-      name: Identifiant de l'appareil
-      description: Identifiant interne de l'appareil à réinitialiser.
+      name: Appareil
+      description: Choisissez l'appareil configuré dans PowerCost (laisser vide pour tous les appareils).
       required: false
       selector:
-        text:
+        device:
+          integration: electricity_cost
     rebuild_all:
       name: Réinitialiser tous les appareils
       description: Définir sur Vrai pour réinitialiser tous les appareils.

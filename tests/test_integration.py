@@ -80,7 +80,7 @@ async def test_full_setup_and_sensor_updates(hass: HomeAssistant):
     assert pytest.approx(stats.cost_today, 0.001) == 0.375
     assert pytest.approx(stats.cost_total, 0.001) == 0.375
 
-    # Test reset_statistics service
+    # Test reset_statistics service with internal id
     await hass.services.async_call(
         DOMAIN,
         SERVICE_RESET_STATISTICS,
@@ -90,6 +90,21 @@ async def test_full_setup_and_sensor_updates(hass: HomeAssistant):
     stats_after_reset = coordinator.statistics["dev_wash"]
     assert stats_after_reset.cost_today == 0.0
     assert stats_after_reset.cost_total == 0.0
+
+    # Test reset_statistics service with Home Assistant Device Registry ID (UI selector)
+    from homeassistant.helpers import device_registry as dr
+    dev_reg = dr.async_get(hass)
+    device_entry = dev_reg.async_get_device(identifiers={(DOMAIN, f"{entry.entry_id}_dev_wash")})
+    assert device_entry is not None
+
+    coordinator.statistics["dev_wash"].cost_today = 5.0
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RESET_STATISTICS,
+        {"device_id": device_entry.id},
+        blocking=True,
+    )
+    assert coordinator.statistics["dev_wash"].cost_today == 0.0
 
     # Test unload
     assert await hass.config_entries.async_unload(entry.entry_id)

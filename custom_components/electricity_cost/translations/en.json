@@ -1,0 +1,113 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Electricity Pricing Setup",
+        "description": "Choose your electricity pricing plan.",
+        "data": {
+          "pricing_mode": "Pricing mode"
+        }
+      },
+      "variable_pricing": {
+        "title": "Variable Pricing",
+        "description": "Select the entity providing the current electricity price.",
+        "data": {
+          "variable_price_entity": "Variable price entity"
+        }
+      },
+      "peak_offpeak_pricing": {
+        "title": "Peak / Off-peak Pricing",
+        "description": "Select off-peak price, peak price, and current tariff mode entities.",
+        "data": {
+          "offpeak_price_entity": "Off-peak price entity",
+          "peak_price_entity": "Peak price entity",
+          "tariff_mode_entity": "Current tariff mode entity"
+        }
+      },
+      "peak_offpeak_states": {
+        "title": "Tariff State Mapping",
+        "description": "Match detected entity states to off-peak and peak periods.",
+        "data": {
+          "offpeak_state": "Off-peak state value",
+          "peak_state": "Peak state value"
+        }
+      },
+      "device_add": {
+        "title": "Add First Device",
+        "description": "Configure the electrical device to monitor.",
+        "data": {
+          "device_name": "Device name",
+          "source_entity": "Source entity",
+          "source_type": "Source type",
+          "source_unit": "Measurement unit (optional)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Electricity Cost Options",
+        "menu_options": {
+          "add_device": "Add a device",
+          "manage_device": "Manage or delete a device",
+          "pricing": "Change pricing settings"
+        }
+      },
+      "add_device": {
+        "title": "Add Device",
+        "data": {
+          "device_name": "Device name",
+          "source_entity": "Source entity",
+          "source_type": "Source type",
+          "source_unit": "Measurement unit"
+        }
+      },
+      "manage_device": {
+        "title": "Manage Device",
+        "data": {
+          "device_id": "Select device",
+          "action": "Action"
+        }
+      },
+      "edit_device": {
+        "title": "Edit Device",
+        "data": {
+          "device_name": "Device name",
+          "source_entity": "Source entity",
+          "source_type": "Source type",
+          "source_unit": "Measurement unit"
+        }
+      },
+      "pricing": {
+        "title": "Modify Pricing Settings",
+        "data": {
+          "variable_price_entity": "Variable price entity",
+          "offpeak_price_entity": "Off-peak price entity",
+          "peak_price_entity": "Peak price entity",
+          "tariff_mode_entity": "Tariff mode entity",
+          "offpeak_state": "Off-peak state value",
+          "peak_state": "Peak state value"
+        }
+      }
+    },
+    "abort": {
+      "no_devices": "No devices configured yet.",
+      "device_not_found": "Device not found."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "cost_day": { "name": "Cost today" },
+      "cost_month": { "name": "Cost this month" },
+      "cost_year": { "name": "Cost this year" },
+      "cost_total": { "name": "Total cost" },
+      "cost_max_day": { "name": "Max daily cost" },
+      "cost_max_month": { "name": "Max monthly cost" },
+      "cost_max_year": { "name": "Max yearly cost" },
+      "cost_avg_day": { "name": "Avg daily cost" },
+      "cost_avg_month": { "name": "Avg monthly cost" },
+      "cost_avg_year": { "name": "Avg yearly cost" }
+    }
+  }
+}

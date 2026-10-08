@@ -1,0 +1,47 @@
+rebuild_history:
+  name: Reconstruire l'historique
+  description: Reconstruit l'historique des consommations et coûts à partir des données du Recorder.
+  fields:
+    device_id:
+      name: Identifiant de l'appareil
+      description: Identifiant interne de l'appareil à reconstruire (laisser vide pour tous).
+      required: false
+      selector:
+        text:
+    start_date:
+      name: Date de début
+      description: Date de début pour la reconstruction (ex 2026-01-01 00:00:00).
+      required: true
+      selector:
+        datetime:
+    end_date:
+      name: Date de fin
+      description: Date de fin pour la reconstruction (par défaut maintenant).
+      required: false
+      selector:
+        datetime:
+    rebuild_all:
+      name: Reconstruire tous les appareils
+      description: Définir sur Vrai pour reconstruire l'ensemble des appareils configurés.
+      required: false
+      default: false
+      selector:
+        boolean:
+
+reset_statistics:
+  name: Réinitialiser les statistiques
+  description: Réinitialise les statistiques de coût et consommation d'un appareil.
+  fields:
+    device_id:
+      name: Identifiant de l'appareil
+      description: Identifiant interne de l'appareil à réinitialiser.
+      required: false
+      selector:
+        text:
+    rebuild_all:
+      name: Réinitialiser tous les appareils
+      description: Définir sur Vrai pour réinitialiser tous les appareils.
+      required: false
+      default: false
+      selector:
+        boolean:

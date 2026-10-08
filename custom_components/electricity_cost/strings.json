@@ -1,0 +1,113 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configuration du tarif de l'électricité",
+        "description": "Choisissez le mode de tarification électrique applicable à votre foyer.",
+        "data": {
+          "pricing_mode": "Mode de tarification"
+        }
+      },
+      "variable_pricing": {
+        "title": "Tarif variable",
+        "description": "Sélectionnez l'entité fournissant le prix actuel du kWh.",
+        "data": {
+          "variable_price_entity": "Entité du prix variable (€/kWh)"
+        }
+      },
+      "peak_offpeak_pricing": {
+        "title": "Heures Creuses / Heures Pleines",
+        "description": "Sélectionnez les entités de prix pour chaque période et l'entité indiquant le mode actif.",
+        "data": {
+          "offpeak_price_entity": "Entité prix heures creuses (€/kWh)",
+          "peak_price_entity": "Entité prix heures pleines (€/kWh)",
+          "tariff_mode_entity": "Entité indiquant la période active"
+        }
+      },
+      "peak_offpeak_states": {
+        "title": "Correspondance des états tarifaires",
+        "description": "Associez les valeurs détectées de votre entité tarifaire aux périodes heures creuses et pleines.",
+        "data": {
+          "offpeak_state": "État correspondant aux Heures Creuses",
+          "peak_state": "État correspondant aux Heures Pleines"
+        }
+      },
+      "device_add": {
+        "title": "Ajout du premier appareil",
+        "description": "Configurez l'appareil électrique à mesurer.",
+        "data": {
+          "device_name": "Nom de l'appareil",
+          "source_entity": "Entité source de mesure",
+          "source_type": "Type de source",
+          "source_unit": "Unité de mesure (optionnel si détectée)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options Electricity Cost",
+        "menu_options": {
+          "add_device": "Ajouter un appareil",
+          "manage_device": "Modifier ou supprimer un appareil",
+          "pricing": "Modifier la configuration tarifaire"
+        }
+      },
+      "add_device": {
+        "title": "Ajouter un appareil",
+        "data": {
+          "device_name": "Nom de l'appareil",
+          "source_entity": "Entité source de mesure",
+          "source_type": "Type de source",
+          "source_unit": "Unité de mesure"
+        }
+      },
+      "manage_device": {
+        "title": "Gérer un appareil",
+        "data": {
+          "device_id": "Sélectionner l'appareil",
+          "action": "Action"
+        }
+      },
+      "edit_device": {
+        "title": "Modifier l'appareil",
+        "data": {
+          "device_name": "Nom de l'appareil",
+          "source_entity": "Entité source de mesure",
+          "source_type": "Type de source",
+          "source_unit": "Unité de mesure"
+        }
+      },
+      "pricing": {
+        "title": "Modifier les réglages tarifaires",
+        "data": {
+          "variable_price_entity": "Entité du prix variable",
+          "offpeak_price_entity": "Entité prix heures creuses",
+          "peak_price_entity": "Entité prix heures pleines",
+          "tariff_mode_entity": "Entité mode tarifaire",
+          "offpeak_state": "État heures creuses",
+          "peak_state": "État heures pleines"
+        }
+      }
+    },
+    "abort": {
+      "no_devices": "Aucun appareil n'est actuellement configuré.",
+      "device_not_found": "Appareil introuvable."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "cost_day": { "name": "Coût aujourd'hui" },
+      "cost_month": { "name": "Coût ce mois" },
+      "cost_year": { "name": "Coût cette année" },
+      "cost_total": { "name": "Coût total" },
+      "cost_max_day": { "name": "Coût max jour" },
+      "cost_max_month": { "name": "Coût max mois" },
+      "cost_max_year": { "name": "Coût max année" },
+      "cost_avg_day": { "name": "Coût moyen jour" },
+      "cost_avg_month": { "name": "Coût moyen mois" },
+      "cost_avg_year": { "name": "Coût moyen année" }
+    }
+  }
+}

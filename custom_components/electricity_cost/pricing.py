@@ -253,6 +253,9 @@ def extract_timeline_intervals(
     peak_target: str | None = None,
     start_bound: datetime | None = None,
     end_bound: datetime | None = None,
+    fallback_price: float | None = None,
+    fallback_offpeak_price: float | None = None,
+    fallback_peak_price: float | None = None,
 ) -> list[PriceInterval]:
     """Build a continuous sequence of PriceIntervals from recorded states."""
     # Collect all timestamps where anything changed
@@ -285,17 +288,22 @@ def extract_timeline_intervals(
         return []
 
     # Map state lookup at a given timestamp
-    def get_val_at(states: list[State] | None, t: datetime) -> float | None:
-        if not states:
-            return None
-        candidate: State | None = None
-        for s in states:
-            s_dt = s.last_updated.astimezone(timezone.utc)
-            if s_dt <= t:
-                candidate = s
-            else:
-                break
-        return parse_float_state(candidate)
+    def get_val_at(states: list[State] | None, t: datetime, default_price: float | None = None) -> float | None:
+        if states:
+            candidate: State | None = None
+            for s in states:
+                s_dt = s.last_updated.astimezone(timezone.utc)
+                if s_dt <= t:
+                    candidate = s
+                else:
+                    break
+            # If t is before the first recorded state, use the first known state
+            if candidate is None:
+                candidate = states[0]
+            val = parse_float_state(candidate)
+            if val is not None:
+                return val
+        return default_price
 
     def get_mode_at(states: list[State] | None, t: datetime) -> str | None:
         if not states:
@@ -307,6 +315,9 @@ def extract_timeline_intervals(
                 candidate = s
             else:
                 break
+        # If t is before the first recorded state, use the first known state
+        if candidate is None:
+            candidate = states[0]
         if candidate and candidate.state not in ("unavailable", "unknown"):
             return str(candidate.state).strip().lower()
         return None
@@ -324,15 +335,21 @@ def extract_timeline_intervals(
         tariff: str | None = None
 
         if mode == PRICING_MODE_VARIABLE:
-            applicable_price = get_val_at(price_states, mid)
+            applicable_price = get_val_at(price_states, mid, default_price=fallback_price)
         else:
             current_mode = get_mode_at(mode_states, mid)
             if current_mode == offpeak_t:
-                applicable_price = get_val_at(offpeak_states, mid)
+                applicable_price = get_val_at(
+                    offpeak_states, mid, default_price=fallback_offpeak_price or fallback_price
+                )
                 tariff = "offpeak"
             elif current_mode == peak_t:
-                applicable_price = get_val_at(peak_states, mid)
+                applicable_price = get_val_at(
+                    peak_states, mid, default_price=fallback_peak_price or fallback_price
+                )
                 tariff = "peak"
+            else:
+                applicable_price = fallback_price
 
         if applicable_price is not None and applicable_price >= 0:
             intervals.append(PriceInterval(start=t0, end=t1, price=applicable_price, tariff=tariff))

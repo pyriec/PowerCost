@@ -33,6 +33,10 @@ from .const import (
     SENSOR_COST_YEAR,
     SENSOR_COST_YEAR_OFFPEAK,
     SENSOR_COST_YEAR_PEAK,
+    SENSOR_ENERGY_DAY_OFFPEAK,
+    SENSOR_ENERGY_DAY_PEAK,
+    SENSOR_ENERGY_TOTAL_OFFPEAK,
+    SENSOR_ENERGY_TOTAL_PEAK,
     SENSOR_TYPES,
     SOURCE_TYPE_POWER,
 )
@@ -259,6 +263,18 @@ class HistoryRebuilder:
 
         # Pre-fetch pricing intervals across whole period
         fallback_price = self.coordinator.pricing_manager.get_current_price() or 0.25
+        fallback_offpeak_price: float | None = None
+        fallback_peak_price: float | None = None
+        if pricing_cfg.mode == PRICING_MODE_PEAK_OFFPEAK:
+            if pricing_cfg.offpeak_price_entity:
+                fallback_offpeak_price = parse_float_state(
+                    self.hass.states.get(pricing_cfg.offpeak_price_entity)
+                )
+            if pricing_cfg.peak_price_entity:
+                fallback_peak_price = parse_float_state(
+                    self.hass.states.get(pricing_cfg.peak_price_entity)
+                )
+
         pricing_entities = [e for e in entity_ids_to_query if e != device_cfg.source_entity]
         price_states_all: dict[str, list[State]] = {}
         if pricing_entities:
@@ -279,6 +295,9 @@ class HistoryRebuilder:
             peak_target=pricing_cfg.peak_state,
             start_bound=start_date,
             end_bound=end_date,
+            fallback_price=fallback_price,
+            fallback_offpeak_price=fallback_offpeak_price,
+            fallback_peak_price=fallback_peak_price,
         )
 
         # Runtime structures
@@ -286,10 +305,12 @@ class HistoryRebuilder:
         unit = device_cfg.source_unit
         total_records_processed = 0
 
-        # Hourly cost delta accumulators for retroactive statistics injection
+        # Hourly delta accumulators for retroactive statistics injection
         hourly_cost_deltas: dict[datetime, float] = {}
         hourly_cost_deltas_offpeak: dict[datetime, float] = {}
         hourly_cost_deltas_peak: dict[datetime, float] = {}
+        hourly_energy_deltas_offpeak: dict[datetime, float] = {}
+        hourly_energy_deltas_peak: dict[datetime, float] = {}
 
         last_val: float | None = None
         last_ts: float | None = None
@@ -378,13 +399,19 @@ class HistoryRebuilder:
                         # Record for hourly bucket
                         h_bucket = t_end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
                         hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + detailed.total_cost
-                        if detailed.cost_offpeak > 0:
+                        if detailed.cost_offpeak > 0 or detailed.energy_offpeak > 0:
                             hourly_cost_deltas_offpeak[h_bucket] = (
                                 hourly_cost_deltas_offpeak.get(h_bucket, 0.0) + detailed.cost_offpeak
                             )
-                        if detailed.cost_peak > 0:
+                            hourly_energy_deltas_offpeak[h_bucket] = (
+                                hourly_energy_deltas_offpeak.get(h_bucket, 0.0) + detailed.energy_offpeak
+                            )
+                        if detailed.cost_peak > 0 or detailed.energy_peak > 0:
                             hourly_cost_deltas_peak[h_bucket] = (
                                 hourly_cost_deltas_peak.get(h_bucket, 0.0) + detailed.cost_peak
+                            )
+                            hourly_energy_deltas_peak[h_bucket] = (
+                                hourly_energy_deltas_peak.get(h_bucket, 0.0) + detailed.energy_peak
                             )
 
                     total_records_processed += 1
@@ -438,13 +465,19 @@ class HistoryRebuilder:
                             # Record for hourly bucket
                             h_bucket = step_end_utc.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
                             hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + detailed.total_cost
-                            if detailed.cost_offpeak > 0:
+                            if detailed.cost_offpeak > 0 or detailed.energy_offpeak > 0:
                                 hourly_cost_deltas_offpeak[h_bucket] = (
                                     hourly_cost_deltas_offpeak.get(h_bucket, 0.0) + detailed.cost_offpeak
                                 )
-                            if detailed.cost_peak > 0:
+                                hourly_energy_deltas_offpeak[h_bucket] = (
+                                    hourly_energy_deltas_offpeak.get(h_bucket, 0.0) + detailed.energy_offpeak
+                                )
+                            if detailed.cost_peak > 0 or detailed.energy_peak > 0:
                                 hourly_cost_deltas_peak[h_bucket] = (
                                     hourly_cost_deltas_peak.get(h_bucket, 0.0) + detailed.cost_peak
+                                )
+                                hourly_energy_deltas_peak[h_bucket] = (
+                                    hourly_energy_deltas_peak.get(h_bucket, 0.0) + detailed.energy_peak
                                 )
 
                     last_val = val
@@ -517,6 +550,8 @@ class HistoryRebuilder:
             hourly_cost_deltas=hourly_cost_deltas,
             hourly_cost_deltas_offpeak=hourly_cost_deltas_offpeak,
             hourly_cost_deltas_peak=hourly_cost_deltas_peak,
+            hourly_energy_deltas_offpeak=hourly_energy_deltas_offpeak,
+            hourly_energy_deltas_peak=hourly_energy_deltas_peak,
         )
 
         _LOGGER.info(
@@ -636,6 +671,8 @@ class HistoryRebuilder:
         hourly_cost_deltas: dict[datetime, float],
         hourly_cost_deltas_offpeak: dict[datetime, float] | None = None,
         hourly_cost_deltas_peak: dict[datetime, float] | None = None,
+        hourly_energy_deltas_offpeak: dict[datetime, float] | None = None,
+        hourly_energy_deltas_peak: dict[datetime, float] | None = None,
     ) -> int:
         """Build and import historical statistics curves for Day, Month, Year, and Total sensors."""
         start_hour = start_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
@@ -668,11 +705,11 @@ class HistoryRebuilder:
             ent_reg = er.async_get(self.hass)
             unique_prefix = f"{self.coordinator.entry_id}_{device_cfg.device_id}_"
 
-            mappings = [
-                (SENSOR_COST_DAY, f"{device_cfg.name} Coût aujourd'hui", points_day),
-                (SENSOR_COST_MONTH, f"{device_cfg.name} Coût ce mois", points_month),
-                (SENSOR_COST_YEAR, f"{device_cfg.name} Coût cette année", points_year),
-                (SENSOR_COST_TOTAL, f"{device_cfg.name} Coût total", points_total),
+            mappings: list[tuple[str, str, list[dict[str, Any]], str, str | None]] = [
+                (SENSOR_COST_DAY, f"{device_cfg.name} Coût aujourd'hui", points_day, "€", None),
+                (SENSOR_COST_MONTH, f"{device_cfg.name} Coût ce mois", points_month, "€", None),
+                (SENSOR_COST_YEAR, f"{device_cfg.name} Coût cette année", points_year, "€", None),
+                (SENSOR_COST_TOTAL, f"{device_cfg.name} Coût total", points_total, "€", None),
             ]
 
             if (
@@ -688,35 +725,55 @@ class HistoryRebuilder:
                 )
                 mappings.extend(
                     [
-                        (SENSOR_COST_DAY_OFFPEAK, f"{device_cfg.name} Coût aujourd'hui (Heures Creuses)", hc_d),
-                        (SENSOR_COST_MONTH_OFFPEAK, f"{device_cfg.name} Coût ce mois (Heures Creuses)", hc_m),
-                        (SENSOR_COST_YEAR_OFFPEAK, f"{device_cfg.name} Coût cette année (Heures Creuses)", hc_y),
-                        (SENSOR_COST_TOTAL_OFFPEAK, f"{device_cfg.name} Coût total (Heures Creuses)", hc_t),
-                        (SENSOR_COST_DAY_PEAK, f"{device_cfg.name} Coût aujourd'hui (Heures Pleines)", hp_d),
-                        (SENSOR_COST_MONTH_PEAK, f"{device_cfg.name} Coût ce mois (Heures Pleines)", hp_m),
-                        (SENSOR_COST_YEAR_PEAK, f"{device_cfg.name} Coût cette année (Heures Pleines)", hp_y),
-                        (SENSOR_COST_TOTAL_PEAK, f"{device_cfg.name} Coût total (Heures Pleines)", hp_t),
+                        (SENSOR_COST_DAY_OFFPEAK, f"{device_cfg.name} Coût aujourd'hui (Heures Creuses)", hc_d, "€", None),
+                        (SENSOR_COST_MONTH_OFFPEAK, f"{device_cfg.name} Coût ce mois (Heures Creuses)", hc_m, "€", None),
+                        (SENSOR_COST_YEAR_OFFPEAK, f"{device_cfg.name} Coût cette année (Heures Creuses)", hc_y, "€", None),
+                        (SENSOR_COST_TOTAL_OFFPEAK, f"{device_cfg.name} Coût total (Heures Creuses)", hc_t, "€", None),
+                        (SENSOR_COST_DAY_PEAK, f"{device_cfg.name} Coût aujourd'hui (Heures Pleines)", hp_d, "€", None),
+                        (SENSOR_COST_MONTH_PEAK, f"{device_cfg.name} Coût ce mois (Heures Pleines)", hp_m, "€", None),
+                        (SENSOR_COST_YEAR_PEAK, f"{device_cfg.name} Coût cette année (Heures Pleines)", hp_y, "€", None),
+                        (SENSOR_COST_TOTAL_PEAK, f"{device_cfg.name} Coût total (Heures Pleines)", hp_t, "€", None),
                     ]
                 )
 
-            target_items: list[tuple[str, str, list[dict[str, Any]]]] = []
-            for sensor_key, friendly_name, pts in mappings:
+            if (
+                self.coordinator.pricing_config.mode == PRICING_MODE_PEAK_OFFPEAK
+                and hourly_energy_deltas_offpeak is not None
+                and hourly_energy_deltas_peak is not None
+            ):
+                hc_e_d, _, _, hc_e_t = self._build_cumulative_curve_points(
+                    start_hour, end_hour, hourly_energy_deltas_offpeak
+                )
+                hp_e_d, _, _, hp_e_t = self._build_cumulative_curve_points(
+                    start_hour, end_hour, hourly_energy_deltas_peak
+                )
+                mappings.extend(
+                    [
+                        (SENSOR_ENERGY_DAY_OFFPEAK, f"{device_cfg.name} Énergie aujourd'hui (Heures Creuses)", hc_e_d, "kWh", "energy"),
+                        (SENSOR_ENERGY_TOTAL_OFFPEAK, f"{device_cfg.name} Énergie totale (Heures Creuses)", hc_e_t, "kWh", "energy"),
+                        (SENSOR_ENERGY_DAY_PEAK, f"{device_cfg.name} Énergie aujourd'hui (Heures Pleines)", hp_e_d, "kWh", "energy"),
+                        (SENSOR_ENERGY_TOTAL_PEAK, f"{device_cfg.name} Énergie totale (Heures Pleines)", hp_e_t, "kWh", "energy"),
+                    ]
+                )
+
+            target_items: list[tuple[str, str, list[dict[str, Any]], str, str | None]] = []
+            for sensor_key, friendly_name, pts, unit, unit_class in mappings:
                 entity_id = ent_reg.async_get_entity_id(
                     "sensor", DOMAIN, f"{unique_prefix}{sensor_key}"
                 )
                 if entity_id and pts:
-                    target_items.append((entity_id, friendly_name, pts))
+                    target_items.append((entity_id, friendly_name, pts, unit, unit_class))
 
             if not target_items:
                 return 0
 
             # Ensure target entities are cleared from recorder statistics first to avoid UNIQUE constraint conflicts
             await async_clear_recorder_statistics(
-                self.hass, [eid for eid, _, _ in target_items]
+                self.hass, [eid for eid, _, _, _, _ in target_items]
             )
 
-            for entity_id, friendly_name, pts in target_items:
-                await self._async_import_sensor_stats(entity_id, friendly_name, pts)
+            for entity_id, friendly_name, pts, unit, unit_class in target_items:
+                await self._async_import_sensor_stats(entity_id, friendly_name, pts, unit=unit, unit_class=unit_class)
                 total_imported_points += len(pts)
 
         except Exception as err:  # pylint: disable=broad-except
@@ -729,6 +786,8 @@ class HistoryRebuilder:
         entity_id: str,
         name: str,
         points: list[dict[str, Any]],
+        unit: str = "€",
+        unit_class: str | None = None,
     ) -> None:
         """Import statistics data points into Home Assistant recorder."""
         if not points or not entity_id:
@@ -744,8 +803,8 @@ class HistoryRebuilder:
                 "name": name,
                 "source": "recorder",
                 "statistic_id": entity_id,
-                "unit_of_measurement": "€",
-                "unit_class": None,
+                "unit_of_measurement": unit,
+                "unit_class": unit_class,
             }
 
             res = async_import_statistics(self.hass, metadata, points)

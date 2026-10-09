@@ -39,6 +39,10 @@ from .const import (
     SENSOR_COST_YEAR_PEAK,
     SENSOR_ENERGY_DAY_OFFPEAK,
     SENSOR_ENERGY_DAY_PEAK,
+    SENSOR_ENERGY_MONTH_OFFPEAK,
+    SENSOR_ENERGY_MONTH_PEAK,
+    SENSOR_ENERGY_YEAR_OFFPEAK,
+    SENSOR_ENERGY_YEAR_PEAK,
     SENSOR_ENERGY_TOTAL_OFFPEAK,
     SENSOR_ENERGY_TOTAL_PEAK,
 )
@@ -209,6 +213,38 @@ PEAK_OFFPEAK_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         native_unit_of_measurement="kWh",
         suggested_display_precision=2,
     ),
+    SENSOR_ENERGY_MONTH_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_MONTH_OFFPEAK,
+        translation_key=SENSOR_ENERGY_MONTH_OFFPEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+    ),
+    SENSOR_ENERGY_MONTH_PEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_MONTH_PEAK,
+        translation_key=SENSOR_ENERGY_MONTH_PEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+    ),
+    SENSOR_ENERGY_YEAR_OFFPEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_YEAR_OFFPEAK,
+        translation_key=SENSOR_ENERGY_YEAR_OFFPEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+    ),
+    SENSOR_ENERGY_YEAR_PEAK: SensorEntityDescription(
+        key=SENSOR_ENERGY_YEAR_PEAK,
+        translation_key=SENSOR_ENERGY_YEAR_PEAK,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="kWh",
+        suggested_display_precision=2,
+    ),
     SENSOR_ENERGY_TOTAL_OFFPEAK: SensorEntityDescription(
         key=SENSOR_ENERGY_TOTAL_OFFPEAK,
         translation_key=SENSOR_ENERGY_TOTAL_OFFPEAK,
@@ -312,6 +348,10 @@ class ElectricityCostSensor(SensorEntity):
             SENSOR_COST_TOTAL_PEAK: stats.cost_total_peak,
             SENSOR_ENERGY_DAY_OFFPEAK: stats.energy_today_offpeak,
             SENSOR_ENERGY_DAY_PEAK: stats.energy_today_peak,
+            SENSOR_ENERGY_MONTH_OFFPEAK: stats.energy_this_month_offpeak,
+            SENSOR_ENERGY_MONTH_PEAK: stats.energy_this_month_peak,
+            SENSOR_ENERGY_YEAR_OFFPEAK: stats.energy_this_year_offpeak,
+            SENSOR_ENERGY_YEAR_PEAK: stats.energy_this_year_peak,
             SENSOR_ENERGY_TOTAL_OFFPEAK: stats.energy_total_offpeak,
             SENSOR_ENERGY_TOTAL_PEAK: stats.energy_total_peak,
             SENSOR_COST_MAX_DAY: stats.max_cost_day,
@@ -350,16 +390,16 @@ class ElectricityCostSensor(SensorEntity):
         elif self.sensor_type in (SENSOR_COST_DAY_PEAK, SENSOR_ENERGY_DAY_PEAK):
             base_attrs["tariff_period"] = "peak"
             base_attrs["energy_today_peak_kwh"] = stats.energy_today_peak
-        elif self.sensor_type in (SENSOR_COST_MONTH_OFFPEAK,):
+        elif self.sensor_type in (SENSOR_COST_MONTH_OFFPEAK, SENSOR_ENERGY_MONTH_OFFPEAK):
             base_attrs["tariff_period"] = "offpeak"
             base_attrs["energy_month_offpeak_kwh"] = stats.energy_this_month_offpeak
-        elif self.sensor_type in (SENSOR_COST_MONTH_PEAK,):
+        elif self.sensor_type in (SENSOR_COST_MONTH_PEAK, SENSOR_ENERGY_MONTH_PEAK):
             base_attrs["tariff_period"] = "peak"
             base_attrs["energy_month_peak_kwh"] = stats.energy_this_month_peak
-        elif self.sensor_type in (SENSOR_COST_YEAR_OFFPEAK,):
+        elif self.sensor_type in (SENSOR_COST_YEAR_OFFPEAK, SENSOR_ENERGY_YEAR_OFFPEAK):
             base_attrs["tariff_period"] = "offpeak"
             base_attrs["energy_year_offpeak_kwh"] = stats.energy_this_year_offpeak
-        elif self.sensor_type in (SENSOR_COST_YEAR_PEAK,):
+        elif self.sensor_type in (SENSOR_COST_YEAR_PEAK, SENSOR_ENERGY_YEAR_PEAK):
             base_attrs["tariff_period"] = "peak"
             base_attrs["energy_year_peak_kwh"] = stats.energy_this_year_peak
         elif self.sensor_type in (SENSOR_COST_TOTAL_OFFPEAK, SENSOR_ENERGY_TOTAL_OFFPEAK):

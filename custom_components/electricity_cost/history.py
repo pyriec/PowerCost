@@ -35,6 +35,10 @@ from .const import (
     SENSOR_COST_YEAR_PEAK,
     SENSOR_ENERGY_DAY_OFFPEAK,
     SENSOR_ENERGY_DAY_PEAK,
+    SENSOR_ENERGY_MONTH_OFFPEAK,
+    SENSOR_ENERGY_MONTH_PEAK,
+    SENSOR_ENERGY_YEAR_OFFPEAK,
+    SENSOR_ENERGY_YEAR_PEAK,
     SENSOR_ENERGY_TOTAL_OFFPEAK,
     SENSOR_ENERGY_TOTAL_PEAK,
     SENSOR_TYPES,
@@ -484,11 +488,6 @@ class HistoryRebuilder:
                     last_ts = current_ts
                     total_records_processed += 1
 
-            # Update coordinator in real-time so UI sensors update as chunks complete
-            self.coordinator.statistics[device_id] = stats
-            await self.coordinator.async_save_data()
-            self.coordinator.async_update_listeners()
-
             # Send progress notification after this chunk
             pct = int((idx / num_chunks) * 100)
             _send_progress_notification(
@@ -538,10 +537,6 @@ class HistoryRebuilder:
         stats.last_source_unit = unit
         stats.last_rebuild_timestamp = dt_util.utcnow().timestamp()
 
-        self.coordinator.statistics[device_id] = stats
-        await self.coordinator.async_save_data()
-        self.coordinator.async_update_listeners()
-
         # 7. Inject retroactive statistics curves into Home Assistant Long-Term Statistics
         imported_stats_count = await self._async_inject_historical_statistics(
             device_cfg=device_cfg,
@@ -553,6 +548,11 @@ class HistoryRebuilder:
             hourly_energy_deltas_offpeak=hourly_energy_deltas_offpeak,
             hourly_energy_deltas_peak=hourly_energy_deltas_peak,
         )
+
+        # 8. Update coordinator and notify UI listeners once everything is ready
+        self.coordinator.statistics[device_id] = stats
+        await self.coordinator.async_save_data()
+        self.coordinator.async_update_listeners()
 
         _LOGGER.info(
             "Rebuild complete for %s. Total cost: %.2f EUR, Total energy: %.2f kWh across %d records. Imported %d LTS points.",
@@ -741,17 +741,21 @@ class HistoryRebuilder:
                 and hourly_energy_deltas_offpeak is not None
                 and hourly_energy_deltas_peak is not None
             ):
-                hc_e_d, _, _, hc_e_t = self._build_cumulative_curve_points(
+                hc_e_d, hc_e_m, hc_e_y, hc_e_t = self._build_cumulative_curve_points(
                     start_hour, end_hour, hourly_energy_deltas_offpeak
                 )
-                hp_e_d, _, _, hp_e_t = self._build_cumulative_curve_points(
+                hp_e_d, hp_e_m, hp_e_y, hp_e_t = self._build_cumulative_curve_points(
                     start_hour, end_hour, hourly_energy_deltas_peak
                 )
                 mappings.extend(
                     [
                         (SENSOR_ENERGY_DAY_OFFPEAK, f"{device_cfg.name} Énergie aujourd'hui (Heures Creuses)", hc_e_d, "kWh", "energy"),
+                        (SENSOR_ENERGY_MONTH_OFFPEAK, f"{device_cfg.name} Énergie ce mois (Heures Creuses)", hc_e_m, "kWh", "energy"),
+                        (SENSOR_ENERGY_YEAR_OFFPEAK, f"{device_cfg.name} Énergie cette année (Heures Creuses)", hc_e_y, "kWh", "energy"),
                         (SENSOR_ENERGY_TOTAL_OFFPEAK, f"{device_cfg.name} Énergie totale (Heures Creuses)", hc_e_t, "kWh", "energy"),
                         (SENSOR_ENERGY_DAY_PEAK, f"{device_cfg.name} Énergie aujourd'hui (Heures Pleines)", hp_e_d, "kWh", "energy"),
+                        (SENSOR_ENERGY_MONTH_PEAK, f"{device_cfg.name} Énergie ce mois (Heures Pleines)", hp_e_m, "kWh", "energy"),
+                        (SENSOR_ENERGY_YEAR_PEAK, f"{device_cfg.name} Énergie cette année (Heures Pleines)", hp_e_y, "kWh", "energy"),
                         (SENSOR_ENERGY_TOTAL_PEAK, f"{device_cfg.name} Énergie totale (Heures Pleines)", hp_e_t, "kWh", "energy"),
                     ]
                 )

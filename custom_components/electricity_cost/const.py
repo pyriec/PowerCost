@@ -71,6 +71,10 @@ SENSOR_COST_TOTAL_PEAK: Final = "cost_total_peak"
 
 SENSOR_ENERGY_DAY_OFFPEAK: Final = "energy_day_offpeak"
 SENSOR_ENERGY_DAY_PEAK: Final = "energy_day_peak"
+SENSOR_ENERGY_MONTH_OFFPEAK: Final = "energy_month_offpeak"
+SENSOR_ENERGY_MONTH_PEAK: Final = "energy_month_peak"
+SENSOR_ENERGY_YEAR_OFFPEAK: Final = "energy_year_offpeak"
+SENSOR_ENERGY_YEAR_PEAK: Final = "energy_year_peak"
 SENSOR_ENERGY_TOTAL_OFFPEAK: Final = "energy_total_offpeak"
 SENSOR_ENERGY_TOTAL_PEAK: Final = "energy_total_peak"
 
@@ -96,6 +100,10 @@ SENSOR_TYPES: Final = (
     SENSOR_COST_TOTAL_PEAK,
     SENSOR_ENERGY_DAY_OFFPEAK,
     SENSOR_ENERGY_DAY_PEAK,
+    SENSOR_ENERGY_MONTH_OFFPEAK,
+    SENSOR_ENERGY_MONTH_PEAK,
+    SENSOR_ENERGY_YEAR_OFFPEAK,
+    SENSOR_ENERGY_YEAR_PEAK,
     SENSOR_ENERGY_TOTAL_OFFPEAK,
     SENSOR_ENERGY_TOTAL_PEAK,
     SENSOR_COST_MAX_DAY,

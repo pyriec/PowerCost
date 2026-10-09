@@ -202,9 +202,12 @@ class ElectricityCostCoordinator:
 
         curr_val = parse_float_state(new_state)
         if curr_val is None:
-            # Device became unavailable or unknown: reset pointer so next reading is baseline
-            stats.last_source_value = None
-            stats.last_source_timestamp = None
+            # Device became unavailable or unknown:
+            if dev_cfg.source_type == SOURCE_TYPE_POWER:
+                stats.last_source_value = None
+                stats.last_source_timestamp = None
+            # For energy counters (energy_total, daily, etc.), retain last_source_value
+            # so consumption accumulated during offline period is captured upon reconnect.
             return
 
         curr_ts = new_state.last_updated.timestamp()

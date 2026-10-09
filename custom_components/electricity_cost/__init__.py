@@ -258,7 +258,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 for dev_id in devices_to_reset:
                     if dev_id in c.devices:
                         dev_name = c.devices[dev_id].name
-                        await async_purge_device_data_and_history(hass, c, dev_id)
+                        await async_purge_device_data_and_history(hass, c, dev_id, notify_listeners=True)
                         _send_progress_notification(
                             hass,
                             device_id=dev_id,

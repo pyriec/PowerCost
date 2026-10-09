@@ -45,7 +45,7 @@ from .const import (
     SOURCE_TYPE_POWER,
 )
 from .models import DeviceConfig, DeviceStatistics, PricingConfig
-from .pricing import extract_timeline_intervals, parse_float_state
+from .pricing import PriceInterval, extract_timeline_intervals, parse_float_state
 
 if TYPE_CHECKING:
     from .coordinator import ElectricityCostCoordinator
@@ -162,8 +162,9 @@ async def async_purge_device_data_and_history(
     hass: HomeAssistant,
     coordinator: ElectricityCostCoordinator,
     device_id: str,
+    notify_listeners: bool = False,
 ) -> None:
-    """Completely wipe storage data, recorder states, and recorder statistics for a device."""
+    """Completely wipe storage data and recorder statistics for a device."""
     entity_ids = get_device_entity_ids(hass, coordinator.entry_id, device_id)
     _LOGGER.info("Purging all data and history for device %s (entities: %s)", device_id, entity_ids)
 
@@ -171,14 +172,11 @@ async def async_purge_device_data_and_history(
     if entity_ids:
         await async_clear_recorder_statistics(hass, entity_ids)
 
-    # 2. Purge states history
-    if entity_ids:
-        await async_purge_recorder_entity_states(hass, entity_ids)
-
-    # 3. Reset in-memory and stored statistics
+    # 2. Reset in-memory and stored statistics
     coordinator.statistics[device_id] = DeviceStatistics(device_id=device_id)
     await coordinator.async_save_data()
-    coordinator.async_update_listeners()
+    if notify_listeners:
+        coordinator.async_update_listeners()
 
 
 class HistoryRebuilder:
@@ -200,6 +198,156 @@ class HistoryRebuilder:
             pass
         return await self.hass.async_add_executor_job(target, *args)
 
+    @staticmethod
+    def _slice_step_by_hours(
+        start_dt: datetime, end_dt: datetime
+    ) -> list[tuple[datetime, datetime]]:
+        """Slice an interval [start_dt, end_dt] into hourly segments aligned with UTC hour boundaries."""
+        if end_dt <= start_dt:
+            return []
+        slices: list[tuple[datetime, datetime]] = []
+        curr = start_dt
+        while curr < end_dt:
+            next_hour = curr.astimezone(timezone.utc).replace(
+                minute=0, second=0, microsecond=0
+            ) + timedelta(hours=1)
+            slice_end = min(next_hour, end_dt)
+            slices.append((curr, slice_end))
+            curr = slice_end
+        return slices
+
+    def _compute_profile_weights(
+        self,
+        lts_stats: list[dict[str, Any]],
+    ) -> dict[int, float]:
+        """Compute relative hourly consumption weights (0-23) based on LTS history."""
+        hourly_samples: dict[int, list[float]] = {h: [] for h in range(24)}
+        for item in lts_stats:
+            start_val = item.get("start")
+            if not start_val:
+                continue
+            dt_item = _parse_stat_timestamp(start_val)
+            h = dt_util.as_local(dt_item).hour
+            val = item.get("change")
+            if val is None or val < 0:
+                val = item.get("mean")
+            if val is not None and val > 0:
+                hourly_samples[h].append(float(val))
+
+        weights: dict[int, float] = {}
+        all_vals: list[float] = [v for samples in hourly_samples.values() for v in samples]
+        overall_avg = sum(all_vals) / len(all_vals) if all_vals else 1.0
+
+        for h in range(24):
+            if hourly_samples[h]:
+                weights[h] = sum(hourly_samples[h]) / len(hourly_samples[h])
+            else:
+                weights[h] = overall_avg
+
+        return weights
+
+    def _find_earliest_state_timestamp(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        entity_id: str,
+    ) -> datetime | None:
+        """Find the earliest actual recorded state change for an entity."""
+        try:
+            changes = history.state_changes_during_period(
+                self.hass,
+                start_date,
+                end_date,
+                entity_id=entity_id,
+                include_start_time_state=False,
+            )
+            states = changes.get(entity_id, [])
+            for s in states:
+                if s.state not in ("unavailable", "unknown", ""):
+                    return dt_util.as_utc(s.last_updated)
+            if states:
+                return dt_util.as_utc(states[0].last_updated)
+        except Exception as err:
+            _LOGGER.debug("Could not find earliest state for %s: %s", entity_id, err)
+        return None
+
+    def _process_step_consumption(
+        self,
+        step_start_utc: datetime,
+        step_end_utc: datetime,
+        energy_kwh: float,
+        price_intervals: list[PriceInterval],
+        fallback_price: float | None,
+        profile_weights: dict[int, float],
+        stats: DeviceStatistics,
+        hourly_cost_deltas: dict[datetime, float],
+        hourly_cost_deltas_offpeak: dict[datetime, float],
+        hourly_cost_deltas_peak: dict[datetime, float],
+        hourly_energy_deltas_offpeak: dict[datetime, float],
+        hourly_energy_deltas_peak: dict[datetime, float],
+    ) -> None:
+        """Distribute energy and cost across hour slices, applying accurate tariffs per slice."""
+        slices = self._slice_step_by_hours(step_start_utc, step_end_utc)
+        if not slices:
+            return
+
+        total_duration = max(0.001, (step_end_utc - step_start_utc).total_seconds())
+
+        # If step is multi-hour, weight by profile of each slice's local hour
+        if len(slices) > 1 and total_duration > 3600.0:
+            slice_weights: list[float] = []
+            for s_start, s_end in slices:
+                loc_h = dt_util.as_local(s_start).hour
+                dur = (s_end - s_start).total_seconds()
+                w = max(0.0001, profile_weights.get(loc_h, 1.0)) * (dur / 3600.0)
+                slice_weights.append(w)
+            sum_w = sum(slice_weights) or 1.0
+            slice_fractions = [w / sum_w for w in slice_weights]
+        else:
+            slice_fractions = [(s_end - s_start).total_seconds() / total_duration for s_start, s_end in slices]
+
+        for (s_start, s_end), frac in zip(slices, slice_fractions):
+            slice_energy = energy_kwh * frac
+            if slice_energy <= 0.0:
+                continue
+
+            detailed = self.coordinator.pricing_manager.calculate_detailed_cost_for_time_range(
+                start_time=s_start,
+                end_time=s_end,
+                energy_kwh=slice_energy,
+                price_intervals=price_intervals,
+                fallback_price=fallback_price,
+            )
+
+            dt_local = dt_util.as_local(s_end)
+            stats.add_consumption(
+                energy_kwh=slice_energy,
+                cost=detailed.total_cost,
+                timestamp=dt_local,
+                cost_offpeak=detailed.cost_offpeak,
+                cost_peak=detailed.cost_peak,
+                energy_offpeak=detailed.energy_offpeak,
+                energy_peak=detailed.energy_peak,
+            )
+
+            # Record in hourly bucket at the START of the hour
+            h_bucket = s_start.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + detailed.total_cost
+            if detailed.cost_offpeak > 0 or detailed.energy_offpeak > 0:
+                hourly_cost_deltas_offpeak[h_bucket] = (
+                    hourly_cost_deltas_offpeak.get(h_bucket, 0.0) + detailed.cost_offpeak
+                )
+                hourly_energy_deltas_offpeak[h_bucket] = (
+                    hourly_energy_deltas_offpeak.get(h_bucket, 0.0) + detailed.energy_offpeak
+                )
+            if detailed.cost_peak > 0 or detailed.energy_peak > 0:
+                hourly_cost_deltas_peak[h_bucket] = (
+                    hourly_cost_deltas_peak.get(h_bucket, 0.0) + detailed.cost_peak
+                )
+                hourly_energy_deltas_peak[h_bucket] = (
+                    hourly_energy_deltas_peak.get(h_bucket, 0.0) + detailed.energy_peak
+                )
+
     async def async_rebuild_device(
         self,
         device_id: str,
@@ -214,10 +362,10 @@ class HistoryRebuilder:
 
         pricing_cfg = self.coordinator.pricing_config
 
-        # 0. Purge existing history and statistics before rebuilding if requested
+        # 0. Purge existing statistics before rebuilding if requested without notifying listeners with 0
         if clear_existing:
-            _LOGGER.info("Purging old statistics and history before rebuild for %s", device_cfg.name)
-            await async_purge_device_data_and_history(self.hass, self.coordinator, device_id)
+            _LOGGER.info("Purging old statistics before rebuild for %s", device_cfg.name)
+            await async_purge_device_data_and_history(self.hass, self.coordinator, device_id, notify_listeners=False)
 
         # 1. Build list of entities to query
         entity_ids_to_query = [device_cfg.source_entity]
@@ -231,39 +379,6 @@ class HistoryRebuilder:
             ):
                 if ent and ent not in entity_ids_to_query:
                     entity_ids_to_query.append(ent)
-
-        # 2. Divide requested range into manageable chunks
-        chunk_delta = timedelta(days=CHUNK_DURATION_DAYS)
-        chunks: list[tuple[datetime, datetime]] = []
-        c_start = start_date
-        while c_start < end_date:
-            c_end = min(c_start + chunk_delta, end_date)
-            chunks.append((c_start, c_end))
-            c_start = c_end
-
-        num_chunks = len(chunks)
-
-        _LOGGER.info(
-            "Starting history rebuild for device '%s' (%s) from %s to %s in %d chunk(s)",
-            device_cfg.name,
-            device_cfg.source_entity,
-            start_date.isoformat(),
-            end_date.isoformat(),
-            num_chunks,
-        )
-
-        # 3. Send initial start notification
-        _send_progress_notification(
-            self.hass,
-            device_id=device_id,
-            title=f"PowerCost - Démarrage du calcul ({device_cfg.name})",
-            message=(
-                f"⏳ **Reconstruction démarrée pour {device_cfg.name}**\n\n"
-                f"- **Période demandée** : du {start_date.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}\n"
-                f"- **Découpage** : {num_chunks} tranche{'s' if num_chunks > 1 else ''} de {CHUNK_DURATION_DAYS} jours\n"
-                f"- Traitement de la première tranche en cours..."
-            ),
-        )
 
         # Pre-fetch pricing intervals across whole period
         fallback_price = self.coordinator.pricing_manager.get_current_price() or 0.25
@@ -304,6 +419,45 @@ class HistoryRebuilder:
             fallback_peak_price=fallback_peak_price,
         )
 
+        # Fetch LTS to build hourly consumption profile weights across the historical period
+        all_lts_stats: list[dict[str, Any]] = await self._async_run_recorder_job(
+            self._fetch_statistics,
+            start_date,
+            end_date,
+            device_cfg.source_entity,
+        )
+        profile_weights = self._compute_profile_weights(all_lts_stats)
+
+        # Detect the earliest actual raw state recorded in the database
+        earliest_raw_dt: datetime | None = await self._async_run_recorder_job(
+            self._find_earliest_state_timestamp,
+            start_date,
+            end_date,
+            device_cfg.source_entity,
+        )
+
+        # Determine LTS phase vs Raw phase
+        lts_end_boundary: datetime | None = None
+        raw_start_boundary: datetime | None = None
+
+        if earliest_raw_dt is None:
+            lts_end_boundary = end_date
+            raw_start_boundary = None
+        elif earliest_raw_dt <= start_date + timedelta(hours=1):
+            lts_end_boundary = None
+            raw_start_boundary = start_date
+        else:
+            lts_end_boundary = earliest_raw_dt
+            raw_start_boundary = earliest_raw_dt
+
+        _LOGGER.info(
+            "Rebuild execution plan for '%s': earliest_raw=%s, lts_end=%s, raw_start=%s",
+            device_cfg.name,
+            earliest_raw_dt.isoformat() if earliest_raw_dt else "None",
+            lts_end_boundary.isoformat() if lts_end_boundary else "None",
+            raw_start_boundary.isoformat() if raw_start_boundary else "None",
+        )
+
         # Runtime structures
         stats = DeviceStatistics(device_id=device_id)
         unit = device_cfg.source_unit
@@ -318,191 +472,163 @@ class HistoryRebuilder:
 
         last_val: float | None = None
         last_ts: float | None = None
-        prev_sum: float | None = None
-        prev_state_val: float | None = None
 
-        # 4. Process chunk by chunk
-        for idx, (chunk_start, chunk_end) in enumerate(chunks, 1):
-            _LOGGER.info(
-                "Processing chunk %d/%d for '%s': %s -> %s",
-                idx,
-                num_chunks,
-                device_cfg.name,
-                chunk_start.isoformat(),
-                chunk_end.isoformat(),
-            )
+        # Phase 1: Replay LTS for historical portion before raw states begin
+        if lts_end_boundary is not None and all_lts_stats:
+            prev_sum: float | None = None
+            prev_state_val: float | None = None
+            for stat_item in all_lts_stats:
+                t_start = _parse_stat_timestamp(stat_item.get("start"))
+                t_end = _parse_stat_timestamp(stat_item.get("end"))
+                if t_start >= lts_end_boundary:
+                    break
 
-            # A. Fetch raw states for this chunk
-            chunk_history = await self._async_run_recorder_job(
-                self._fetch_history,
-                chunk_start,
-                chunk_end,
-                entity_ids_to_query,
-            )
-            source_states = chunk_history.get(device_cfg.source_entity, [])
-
-            # B. If raw states missing in this chunk, try Long-Term Statistics (LTS)
-            lts_stats: list[dict[str, Any]] = []
-            if not source_states:
-                lts_stats = await self._async_run_recorder_job(
-                    self._fetch_statistics,
-                    chunk_start,
-                    chunk_end,
-                    device_cfg.source_entity,
-                )
-
-            # Replay LTS if used
-            if lts_stats:
-                for stat_item in lts_stats:
-                    t_start = _parse_stat_timestamp(stat_item.get("start"))
-                    t_end = _parse_stat_timestamp(stat_item.get("end"))
-                    dt_local = dt_util.as_local(t_end)
-
-                    energy_delta = 0.0
-                    if device_cfg.source_type == SOURCE_TYPE_POWER:
-                        mean_val = stat_item.get("mean")
-                        if mean_val is not None:
-                            power_kw = normalize_power_to_kw(float(mean_val), unit)
-                            duration_hours = max(0.0, (t_end - t_start).total_seconds() / 3600.0)
-                            energy_delta = max(0.0, power_kw * duration_hours)
-                    else:
-                        change_val = stat_item.get("change")
-                        if change_val is not None and change_val >= 0:
-                            energy_delta = normalize_energy_to_kwh(float(change_val), unit)
-                        elif stat_item.get("sum") is not None:
-                            curr_sum = normalize_energy_to_kwh(float(stat_item["sum"]), unit)
-                            if prev_sum is not None and curr_sum >= prev_sum:
-                                energy_delta = round(curr_sum - prev_sum, 6)
-                            prev_sum = curr_sum
-                        elif stat_item.get("state") is not None:
-                            curr_st = float(stat_item["state"])
-                            if prev_state_val is not None:
-                                energy_delta = calculate_energy_delta(
-                                    device_cfg.source_type, prev_state_val, curr_st, unit
-                                )
-                            prev_state_val = curr_st
-
-                    if energy_delta > 0.0:
-                        detailed = self.coordinator.pricing_manager.calculate_detailed_cost_for_time_range(
-                            start_time=t_start,
-                            end_time=t_end,
-                            energy_kwh=energy_delta,
-                            price_intervals=price_intervals,
-                            fallback_price=fallback_price,
-                        )
-                        stats.add_consumption(
-                            energy_kwh=energy_delta,
-                            cost=detailed.total_cost,
-                            timestamp=dt_local,
-                            cost_offpeak=detailed.cost_offpeak,
-                            cost_peak=detailed.cost_peak,
-                            energy_offpeak=detailed.energy_offpeak,
-                            energy_peak=detailed.energy_peak,
-                        )
-
-                        # Record for hourly bucket
-                        h_bucket = t_end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-                        hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + detailed.total_cost
-                        if detailed.cost_offpeak > 0 or detailed.energy_offpeak > 0:
-                            hourly_cost_deltas_offpeak[h_bucket] = (
-                                hourly_cost_deltas_offpeak.get(h_bucket, 0.0) + detailed.cost_offpeak
-                            )
-                            hourly_energy_deltas_offpeak[h_bucket] = (
-                                hourly_energy_deltas_offpeak.get(h_bucket, 0.0) + detailed.energy_offpeak
-                            )
-                        if detailed.cost_peak > 0 or detailed.energy_peak > 0:
-                            hourly_cost_deltas_peak[h_bucket] = (
-                                hourly_cost_deltas_peak.get(h_bucket, 0.0) + detailed.cost_peak
-                            )
-                            hourly_energy_deltas_peak[h_bucket] = (
-                                hourly_energy_deltas_peak.get(h_bucket, 0.0) + detailed.energy_peak
-                            )
-
-                    total_records_processed += 1
-
-            # Replay raw states
-            elif source_states:
-                sorted_source_states = sorted(source_states, key=lambda s: s.last_updated)
-                for state in sorted_source_states:
-                    val = parse_float_state(state)
-                    if val is None:
-                        continue
-
-                    current_ts = state.last_updated.timestamp()
-                    dt_local = dt_util.as_local(state.last_updated)
-
-                    if unit is None:
-                        unit = state.attributes.get("unit_of_measurement")
-
-                    if last_val is not None and last_ts is not None:
-                        step_start_utc = datetime.fromtimestamp(last_ts, tz=timezone.utc)
-                        step_end_utc = datetime.fromtimestamp(current_ts, tz=timezone.utc)
-
-                        energy_delta = 0.0
-                        if device_cfg.source_type == SOURCE_TYPE_POWER:
-                            energy_delta = calculate_power_consumption(
-                                last_val, val, last_ts, current_ts, unit
-                            )
-                        else:
+                energy_delta = 0.0
+                if device_cfg.source_type == SOURCE_TYPE_POWER:
+                    mean_val = stat_item.get("mean")
+                    if mean_val is not None:
+                        power_kw = normalize_power_to_kw(float(mean_val), unit)
+                        duration_hours = max(0.0, (t_end - t_start).total_seconds() / 3600.0)
+                        energy_delta = max(0.0, power_kw * duration_hours)
+                else:
+                    change_val = stat_item.get("change")
+                    if change_val is not None and change_val >= 0:
+                        energy_delta = normalize_energy_to_kwh(float(change_val), unit)
+                    elif stat_item.get("sum") is not None:
+                        curr_sum = normalize_energy_to_kwh(float(stat_item["sum"]), unit)
+                        if prev_sum is not None and curr_sum >= prev_sum:
+                            energy_delta = round(curr_sum - prev_sum, 6)
+                        prev_sum = curr_sum
+                    elif stat_item.get("state") is not None:
+                        curr_st = float(stat_item["state"])
+                        if prev_state_val is not None:
                             energy_delta = calculate_energy_delta(
-                                device_cfg.source_type, last_val, val, unit
+                                device_cfg.source_type, prev_state_val, curr_st, unit
                             )
+                        prev_state_val = curr_st
 
-                        if energy_delta > 0.0:
-                            detailed = self.coordinator.pricing_manager.calculate_detailed_cost_for_time_range(
-                                start_time=step_start_utc,
-                                end_time=step_end_utc,
-                                energy_kwh=energy_delta,
-                                price_intervals=price_intervals,
-                                fallback_price=fallback_price,
-                            )
-                            stats.add_consumption(
-                                energy_kwh=energy_delta,
-                                cost=detailed.total_cost,
-                                timestamp=dt_local,
-                                cost_offpeak=detailed.cost_offpeak,
-                                cost_peak=detailed.cost_peak,
-                                energy_offpeak=detailed.energy_offpeak,
-                                energy_peak=detailed.energy_peak,
-                            )
-
-                            # Record for hourly bucket
-                            h_bucket = step_end_utc.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-                            hourly_cost_deltas[h_bucket] = hourly_cost_deltas.get(h_bucket, 0.0) + detailed.total_cost
-                            if detailed.cost_offpeak > 0 or detailed.energy_offpeak > 0:
-                                hourly_cost_deltas_offpeak[h_bucket] = (
-                                    hourly_cost_deltas_offpeak.get(h_bucket, 0.0) + detailed.cost_offpeak
-                                )
-                                hourly_energy_deltas_offpeak[h_bucket] = (
-                                    hourly_energy_deltas_offpeak.get(h_bucket, 0.0) + detailed.energy_offpeak
-                                )
-                            if detailed.cost_peak > 0 or detailed.energy_peak > 0:
-                                hourly_cost_deltas_peak[h_bucket] = (
-                                    hourly_cost_deltas_peak.get(h_bucket, 0.0) + detailed.cost_peak
-                                )
-                                hourly_energy_deltas_peak[h_bucket] = (
-                                    hourly_energy_deltas_peak.get(h_bucket, 0.0) + detailed.energy_peak
-                                )
-
-                    last_val = val
-                    last_ts = current_ts
+                if energy_delta > 0.0:
+                    self._process_step_consumption(
+                        step_start_utc=t_start,
+                        step_end_utc=t_end,
+                        energy_kwh=energy_delta,
+                        price_intervals=price_intervals,
+                        fallback_price=fallback_price,
+                        profile_weights=profile_weights,
+                        stats=stats,
+                        hourly_cost_deltas=hourly_cost_deltas,
+                        hourly_cost_deltas_offpeak=hourly_cost_deltas_offpeak,
+                        hourly_cost_deltas_peak=hourly_cost_deltas_peak,
+                        hourly_energy_deltas_offpeak=hourly_energy_deltas_offpeak,
+                        hourly_energy_deltas_peak=hourly_energy_deltas_peak,
+                    )
                     total_records_processed += 1
 
-            # Send progress notification after this chunk
-            pct = int((idx / num_chunks) * 100)
+        # Phase 2: Replay high-precision Raw States
+        if raw_start_boundary is not None:
+            chunk_delta = timedelta(days=CHUNK_DURATION_DAYS)
+            chunks: list[tuple[datetime, datetime]] = []
+            c_start = raw_start_boundary
+            while c_start < end_date:
+                c_end = min(c_start + chunk_delta, end_date)
+                chunks.append((c_start, c_end))
+                c_start = c_end
+
+            num_chunks = max(1, len(chunks))
+
             _send_progress_notification(
                 self.hass,
                 device_id=device_id,
-                title=f"PowerCost - Progression ({idx}/{num_chunks})",
+                title=f"PowerCost - Démarrage du calcul ({device_cfg.name})",
                 message=(
-                    f"⏳ **Reconstruction en cours pour {device_cfg.name}**\n\n"
-                    f"- **Progression** : Tranche {idx}/{num_chunks} ({pct}%)\n"
-                    f"- **Tranche traitée** : du {chunk_start.strftime('%d/%m/%Y')} au {chunk_end.strftime('%d/%m/%Y')}\n"
-                    f"- **Enregistrements cumulés** : {total_records_processed}\n"
-                    f"- **Consommation calculée** : {stats.energy_total:.2f} kWh\n"
-                    f"- **Coût cumulé actuel** : {stats.cost_total:.2f} €"
+                    f"⏳ **Reconstruction démarrée pour {device_cfg.name}**\n\n"
+                    f"- **Période brute** : du {raw_start_boundary.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}\n"
+                    f"- **Découpage** : {num_chunks} tranche{'s' if num_chunks > 1 else ''} de {CHUNK_DURATION_DAYS} jours\n"
+                    f"- Traitement haute précision en cours..."
                 ),
             )
+
+            for idx, (chunk_start, chunk_end) in enumerate(chunks, 1):
+                chunk_history = await self._async_run_recorder_job(
+                    self._fetch_history,
+                    chunk_start,
+                    chunk_end,
+                    entity_ids_to_query,
+                )
+                source_states = chunk_history.get(device_cfg.source_entity, [])
+                if source_states:
+                    sorted_source_states = sorted(source_states, key=lambda s: s.last_updated)
+                    for state in sorted_source_states:
+                        val = parse_float_state(state)
+                        if val is None:
+                            continue
+
+                        current_ts = state.last_updated.timestamp()
+                        if unit is None:
+                            unit = state.attributes.get("unit_of_measurement")
+
+                        if last_val is not None and last_ts is not None:
+                            step_start_utc = datetime.fromtimestamp(last_ts, tz=timezone.utc)
+                            step_end_utc = datetime.fromtimestamp(current_ts, tz=timezone.utc)
+
+                            energy_delta = 0.0
+                            if device_cfg.source_type == SOURCE_TYPE_POWER:
+                                elapsed = current_ts - last_ts
+                                if elapsed > 3600.0:
+                                    # Power sensor gap > 1 hour: estimate using profile
+                                    slices = self._slice_step_by_hours(step_start_utc, step_end_utc)
+                                    energy_delta = 0.0
+                                    for s_a, s_b in slices:
+                                        dur_h = (s_b - s_a).total_seconds() / 3600.0
+                                        h_loc = dt_util.as_local(s_a).hour
+                                        p_kw = normalize_power_to_kw(
+                                            profile_weights.get(h_loc, (last_val + val) / 2.0), unit
+                                        )
+                                        energy_delta += p_kw * dur_h
+                                else:
+                                    energy_delta = calculate_power_consumption(
+                                        last_val, val, last_ts, current_ts, unit
+                                    )
+                            else:
+                                energy_delta = calculate_energy_delta(
+                                    device_cfg.source_type, last_val, val, unit
+                                )
+
+                            if energy_delta > 0.0:
+                                self._process_step_consumption(
+                                    step_start_utc=step_start_utc,
+                                    step_end_utc=step_end_utc,
+                                    energy_kwh=energy_delta,
+                                    price_intervals=price_intervals,
+                                    fallback_price=fallback_price,
+                                    profile_weights=profile_weights,
+                                    stats=stats,
+                                    hourly_cost_deltas=hourly_cost_deltas,
+                                    hourly_cost_deltas_offpeak=hourly_cost_deltas_offpeak,
+                                    hourly_cost_deltas_peak=hourly_cost_deltas_peak,
+                                    hourly_energy_deltas_offpeak=hourly_energy_deltas_offpeak,
+                                    hourly_energy_deltas_peak=hourly_energy_deltas_peak,
+                                )
+
+                        last_val = val
+                        last_ts = current_ts
+                        total_records_processed += 1
+
+                # Send progress notification after this chunk
+                pct = int((idx / num_chunks) * 100)
+                _send_progress_notification(
+                    self.hass,
+                    device_id=device_id,
+                    title=f"PowerCost - Progression ({idx}/{num_chunks})",
+                    message=(
+                        f"⏳ **Reconstruction en cours pour {device_cfg.name}**\n\n"
+                        f"- **Progression** : Tranche {idx}/{num_chunks} ({pct}%)\n"
+                        f"- **Tranche traitée** : du {chunk_start.strftime('%d/%m/%Y')} au {chunk_end.strftime('%d/%m/%Y')}\n"
+                        f"- **Enregistrements cumulés** : {total_records_processed}\n"
+                        f"- **Consommation calculée** : {stats.energy_total:.2f} kWh\n"
+                        f"- **Coût cumulé actuel** : {stats.cost_total:.2f} €"
+                    ),
+                )
 
         # 5. Check if any data was processed
         if total_records_processed == 0:

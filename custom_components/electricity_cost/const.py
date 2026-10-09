@@ -114,4 +114,5 @@ ATTR_DEVICE_ID: Final = "device_id"
 ATTR_START_DATE: Final = "start_date"
 ATTR_END_DATE: Final = "end_date"
 ATTR_REBUILD_ALL: Final = "rebuild_all"
+ATTR_CLEAR_EXISTING: Final = "clear_existing"
 

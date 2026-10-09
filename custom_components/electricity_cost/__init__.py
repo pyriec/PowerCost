@@ -16,6 +16,7 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    ATTR_CLEAR_EXISTING,
     ATTR_DEVICE_ID,
     ATTR_END_DATE,
     ATTR_REBUILD_ALL,
@@ -26,7 +27,11 @@ from .const import (
     SERVICE_RESET_STATISTICS,
 )
 from .coordinator import ElectricityCostCoordinator
-from .history import HistoryRebuilder
+from .history import (
+    HistoryRebuilder,
+    _send_progress_notification,
+    async_purge_device_data_and_history,
+)
 from .models import DeviceConfig, DeviceStatistics, PricingConfig
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,6 +46,7 @@ REBUILD_SERVICE_SCHEMA = vol.Schema(
         vol.Required(ATTR_START_DATE): cv.datetime,
         vol.Optional(ATTR_END_DATE): cv.datetime,
         vol.Optional(ATTR_REBUILD_ALL, default=False): cv.boolean,
+        vol.Optional(ATTR_CLEAR_EXISTING, default=True): cv.boolean,
     }
 )
 
@@ -170,6 +176,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             start_date: datetime = call.data[ATTR_START_DATE]
             end_date: datetime = call.data.get(ATTR_END_DATE) or dt_util.utcnow()
             rebuild_all = call.data.get(ATTR_REBUILD_ALL, False)
+            clear_existing = call.data.get(ATTR_CLEAR_EXISTING, True)
 
             # Ensure UTC datetime
             if start_date.tzinfo is None:
@@ -207,7 +214,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 for dev_id in devices_to_process:
                     if dev_id in c.devices:
                         try:
-                            res = await r.async_rebuild_device(dev_id, start_date, end_date)
+                            res = await r.async_rebuild_device(
+                                dev_id, start_date, end_date, clear_existing=clear_existing
+                            )
                             if res.get("success"):
                                 total_rebuilt += 1
                             else:
@@ -227,7 +236,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
 
         async def handle_reset_statistics(call: ServiceCall) -> None:
-            """Service to reset statistics for a device or all devices."""
+            """Service to reset statistics and purge history for a device or all devices."""
             reset_all = call.data.get(ATTR_REBUILD_ALL, False)
 
             targets: list[str] = []
@@ -248,9 +257,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 for dev_id in devices_to_reset:
                     if dev_id in c.devices:
-                        c.statistics[dev_id] = DeviceStatistics(device_id=dev_id)
-                await c.async_save_data()
-                c.async_update_listeners()
+                        dev_name = c.devices[dev_id].name
+                        await async_purge_device_data_and_history(hass, c, dev_id)
+                        _send_progress_notification(
+                            hass,
+                            device_id=dev_id,
+                            title=f"PowerCost - Remise à zéro ({dev_name})",
+                            message=(
+                                f"🧹 **Remise à zéro complète effectuée pour {dev_name}**\n\n"
+                                "- Toutes les données en mémoire et sur disque ont été réinitialisées à 0.\n"
+                                "- L'historique et les statistiques à long terme ont été purgés dans Home Assistant."
+                            ),
+                        )
 
         hass.services.async_register(
             DOMAIN,

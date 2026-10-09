@@ -33,6 +33,7 @@ from .const import (
     SENSOR_COST_YEAR,
     SENSOR_COST_YEAR_OFFPEAK,
     SENSOR_COST_YEAR_PEAK,
+    SENSOR_TYPES,
     SOURCE_TYPE_POWER,
 )
 from .models import DeviceConfig, DeviceStatistics, PricingConfig
@@ -76,6 +77,101 @@ def _send_progress_notification(
         _LOGGER.debug("Could not create persistent notification: %s", err)
 
 
+async def async_clear_recorder_statistics(hass: HomeAssistant, statistic_ids: list[str]) -> bool:
+    """Clear long-term statistics from Home Assistant recorder."""
+    if not statistic_ids:
+        return True
+    try:
+        from homeassistant.components.recorder import get_instance
+        from homeassistant.components.recorder.tasks import ClearStatisticsTask
+
+        instance = get_instance(hass)
+        if not instance or not hasattr(instance, "queue_task"):
+            return False
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+
+        def on_done(success: bool) -> None:
+            if not future.done():
+                loop.call_soon_threadsafe(future.set_result, success)
+
+        instance.queue_task(ClearStatisticsTask(on_done=on_done, statistic_ids=statistic_ids))
+        return await asyncio.wait_for(future, timeout=30.0)
+    except asyncio.TimeoutError:
+        _LOGGER.warning("Timeout while clearing recorder statistics for %s", statistic_ids)
+        return False
+    except Exception as err:
+        _LOGGER.warning("Failed to clear recorder statistics for %s: %s", statistic_ids, err)
+        return False
+
+
+async def async_purge_recorder_entity_states(hass: HomeAssistant, entity_ids: list[str]) -> None:
+    """Purge state history for entity IDs."""
+    if not entity_ids:
+        return
+    try:
+        if (
+            hasattr(hass, "services")
+            and hasattr(hass.services, "has_service")
+            and hass.services.has_service("recorder", "purge_entities")
+        ):
+            await hass.services.async_call(
+                "recorder",
+                "purge_entities",
+                {"entity_id": entity_ids, "keep_days": 0},
+                blocking=True,
+            )
+    except Exception as err:
+        _LOGGER.warning("Failed to purge recorder states for %s: %s", entity_ids, err)
+
+
+def get_device_entity_ids(hass: HomeAssistant, coordinator_entry_id: str, device_id: str) -> list[str]:
+    """Get all entity IDs belonging to a device."""
+    found: list[str] = []
+    try:
+        from homeassistant.helpers import entity_registry as er
+
+        ent_reg = er.async_get(hass)
+        prefix = f"{coordinator_entry_id}_{device_id}_"
+        if hasattr(ent_reg, "entities"):
+            for ent in ent_reg.entities.values():
+                if getattr(ent, "platform", None) == DOMAIN and getattr(ent, "unique_id", "").startswith(prefix):
+                    found.append(ent.entity_id)
+
+        # Supplementary check using known SENSOR_TYPES
+        for s_type in SENSOR_TYPES:
+            ent_id = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{prefix}{s_type}")
+            if ent_id and ent_id not in found:
+                found.append(ent_id)
+    except Exception as err:
+        _LOGGER.debug("Could not lookup entity IDs for %s: %s", device_id, err)
+    return found
+
+
+async def async_purge_device_data_and_history(
+    hass: HomeAssistant,
+    coordinator: ElectricityCostCoordinator,
+    device_id: str,
+) -> None:
+    """Completely wipe storage data, recorder states, and recorder statistics for a device."""
+    entity_ids = get_device_entity_ids(hass, coordinator.entry_id, device_id)
+    _LOGGER.info("Purging all data and history for device %s (entities: %s)", device_id, entity_ids)
+
+    # 1. Clear Long-Term Statistics
+    if entity_ids:
+        await async_clear_recorder_statistics(hass, entity_ids)
+
+    # 2. Purge states history
+    if entity_ids:
+        await async_purge_recorder_entity_states(hass, entity_ids)
+
+    # 3. Reset in-memory and stored statistics
+    coordinator.statistics[device_id] = DeviceStatistics(device_id=device_id)
+    await coordinator.async_save_data()
+    coordinator.async_update_listeners()
+
+
 class HistoryRebuilder:
     """Handles querying the Recorder and rebuilding historical consumption and costs."""
 
@@ -100,6 +196,7 @@ class HistoryRebuilder:
         device_id: str,
         start_date: datetime,
         end_date: datetime,
+        clear_existing: bool = True,
     ) -> dict[str, Any]:
         """Rebuild history for a specific device between start_date and end_date."""
         device_cfg = self.coordinator.devices.get(device_id)
@@ -107,6 +204,11 @@ class HistoryRebuilder:
             raise ValueError(f"Appareil '{device_id}' non trouvé dans la configuration PowerCost")
 
         pricing_cfg = self.coordinator.pricing_config
+
+        # 0. Purge existing history and statistics before rebuilding if requested
+        if clear_existing:
+            _LOGGER.info("Purging old statistics and history before rebuild for %s", device_cfg.name)
+            await async_purge_device_data_and_history(self.hass, self.coordinator, device_id)
 
         # 1. Build list of entities to query
         entity_ids_to_query = [device_cfg.source_entity]

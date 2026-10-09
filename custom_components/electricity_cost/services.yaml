@@ -1,6 +1,6 @@
 rebuild_history:
   name: Reconstruire l'historique
-  description: Reconstruit l'historique des consommations et coûts à partir des données du Recorder.
+  description: Purge l'ancien historique et reconstruit les consommations et coûts à partir des données du Recorder.
   fields:
     device_id:
       name: Appareil
@@ -28,10 +28,17 @@ rebuild_history:
       default: false
       selector:
         boolean:
+    clear_existing:
+      name: Purger l'historique existant
+      description: Supprime l'ancien historique et les statistiques de l'appareil dans la base avant de recréer les nouvelles courbes propres.
+      required: false
+      default: true
+      selector:
+        boolean:
 
 reset_statistics:
-  name: Réinitialiser les statistiques
-  description: Réinitialise les statistiques de coût et consommation d'un appareil.
+  name: Remise à zéro complète (Reset)
+  description: Réinitialise complètement les statistiques en mémoire/stockage et purge l'historique et les statistiques à long terme de l'appareil dans Home Assistant.
   fields:
     device_id:
       name: Appareil
@@ -42,8 +49,9 @@ reset_statistics:
           integration: electricity_cost
     rebuild_all:
       name: Réinitialiser tous les appareils
-      description: Définir sur Vrai pour réinitialiser tous les appareils.
+      description: Définir sur Vrai pour réinitialiser l'ensemble des appareils.
       required: false
       default: false
       selector:
         boolean:
+

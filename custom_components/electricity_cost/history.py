@@ -92,12 +92,13 @@ async def async_clear_recorder_statistics(hass: HomeAssistant, statistic_ids: li
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
 
-        def on_done(success: bool) -> None:
+        def on_done(*args: Any, **kwargs: Any) -> None:
+            res = args[0] if args else True
             if not future.done():
-                loop.call_soon_threadsafe(future.set_result, success)
+                loop.call_soon_threadsafe(future.set_result, res)
 
         instance.queue_task(ClearStatisticsTask(on_done=on_done, statistic_ids=statistic_ids))
-        return await asyncio.wait_for(future, timeout=30.0)
+        return await asyncio.wait_for(future, timeout=60.0)
     except asyncio.TimeoutError:
         _LOGGER.warning("Timeout while clearing recorder statistics for %s", statistic_ids)
         return False
@@ -640,6 +641,21 @@ class HistoryRebuilder:
         start_hour = start_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
         end_hour = end_date.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
+        # Do not import statistics for current ongoing hour or future hours to avoid collisions
+        # with Home Assistant recorder's live periodic compilation.
+        current_hour_utc = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+        if end_hour >= current_hour_utc:
+            end_hour = current_hour_utc - timedelta(hours=1)
+
+        if start_hour > end_hour:
+            _LOGGER.debug(
+                "Skipping statistics injection for %s: start_hour %s is after end_hour %s",
+                device_cfg.name,
+                start_hour.isoformat(),
+                end_hour.isoformat(),
+            )
+            return 0
+
         points_day, points_month, points_year, points_total = self._build_cumulative_curve_points(
             start_hour, end_hour, hourly_cost_deltas
         )
@@ -683,11 +699,25 @@ class HistoryRebuilder:
                     ]
                 )
 
+            target_items: list[tuple[str, str, list[dict[str, Any]]]] = []
             for sensor_key, friendly_name, pts in mappings:
-                entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{unique_prefix}{sensor_key}")
+                entity_id = ent_reg.async_get_entity_id(
+                    "sensor", DOMAIN, f"{unique_prefix}{sensor_key}"
+                )
                 if entity_id and pts:
-                    await self._async_import_sensor_stats(entity_id, friendly_name, pts)
-                    total_imported_points += len(pts)
+                    target_items.append((entity_id, friendly_name, pts))
+
+            if not target_items:
+                return 0
+
+            # Ensure target entities are cleared from recorder statistics first to avoid UNIQUE constraint conflicts
+            await async_clear_recorder_statistics(
+                self.hass, [eid for eid, _, _ in target_items]
+            )
+
+            for entity_id, friendly_name, pts in target_items:
+                await self._async_import_sensor_stats(entity_id, friendly_name, pts)
+                total_imported_points += len(pts)
 
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.warning("Could not inject statistics for %s: %s", device_cfg.name, err)

@@ -18,6 +18,10 @@ from .calculations import (
     normalize_power_to_kw,
 )
 from .const import (
+    ATTR_DATA_SOURCE,
+    DATA_SOURCE_MIXED,
+    DATA_SOURCE_RECORDER,
+    DATA_SOURCE_STATISTICS,
     DOMAIN,
     PRICING_MODE_PEAK_OFFPEAK,
     PRICING_MODE_VARIABLE,
@@ -54,6 +58,18 @@ _LOGGER = logging.getLogger(__name__)
 
 # Duration of each processing chunk (15 days)
 CHUNK_DURATION_DAYS = 15
+
+
+def normalize_data_source(val: str | None) -> str:
+    """Normalize user input data source to standard constant."""
+    if not val:
+        return DATA_SOURCE_MIXED
+    val = str(val).lower().strip()
+    if val in ("recorder", "recorder_only", "raw", "precise"):
+        return DATA_SOURCE_RECORDER
+    if val in ("statistics", "lts", "lts_only", "long_term"):
+        return DATA_SOURCE_STATISTICS
+    return DATA_SOURCE_MIXED
 
 
 def _parse_stat_timestamp(val: Any) -> datetime:
@@ -252,21 +268,26 @@ class HistoryRebuilder:
         end_date: datetime,
         entity_id: str,
     ) -> datetime | None:
-        """Find the earliest actual recorded state change for an entity."""
+        """Find the earliest actual recorded state for an entity in the period."""
         try:
-            changes = history.state_changes_during_period(
-                self.hass,
-                start_date,
-                end_date,
-                entity_id=entity_id,
-                include_start_time_state=False,
-            )
-            states = changes.get(entity_id, [])
-            for s in states:
-                if s.state not in ("unavailable", "unknown", ""):
-                    return dt_util.as_utc(s.last_updated)
-            if states:
-                return dt_util.as_utc(states[0].last_updated)
+            chunk_delta = timedelta(days=CHUNK_DURATION_DAYS)
+            curr_start = start_date
+            while curr_start < end_date:
+                curr_end = min(curr_start + chunk_delta, end_date)
+                chunk_hist = self._fetch_history(curr_start, curr_end, [entity_id])
+                states = chunk_hist.get(entity_id, [])
+                for s in states:
+                    if s.state not in ("unavailable", "unknown", ""):
+                        s_dt = dt_util.as_utc(s.last_updated)
+                        if s_dt <= start_date + timedelta(hours=2):
+                            return start_date
+                        return s_dt
+                if states:
+                    s_dt = dt_util.as_utc(states[0].last_updated)
+                    if s_dt <= start_date + timedelta(hours=2):
+                        return start_date
+                    return s_dt
+                curr_start = curr_end
         except Exception as err:
             _LOGGER.debug("Could not find earliest state for %s: %s", entity_id, err)
         return None
@@ -354,6 +375,7 @@ class HistoryRebuilder:
         start_date: datetime,
         end_date: datetime,
         clear_existing: bool = True,
+        data_source: str = DATA_SOURCE_MIXED,
     ) -> dict[str, Any]:
         """Rebuild history for a specific device between start_date and end_date."""
         device_cfg = self.coordinator.devices.get(device_id)
@@ -361,13 +383,179 @@ class HistoryRebuilder:
             raise ValueError(f"Appareil '{device_id}' non trouvé dans la configuration PowerCost")
 
         pricing_cfg = self.coordinator.pricing_config
+        norm_source = normalize_data_source(data_source)
 
-        # 0. Purge existing statistics before rebuilding if requested without notifying listeners with 0
+        fmt = "%d/%m/%Y %H:%M"
+        start_fmt = dt_util.as_local(start_date).strftime(fmt)
+        end_fmt = dt_util.as_local(end_date).strftime(fmt)
+
+        # 1. Fetch long-term statistics if needed (for statistics mode, mixed mode, or profile weights)
+        all_lts_stats: list[dict[str, Any]] = []
+        if norm_source in (DATA_SOURCE_STATISTICS, DATA_SOURCE_MIXED) or device_cfg.source_type == SOURCE_TYPE_POWER:
+            all_lts_stats = await self._async_run_recorder_job(
+                self._fetch_statistics,
+                start_date,
+                end_date,
+                device_cfg.source_entity,
+            )
+        profile_weights = self._compute_profile_weights(all_lts_stats)
+
+        # 2. Validate data availability and determine phase boundaries based on selected data_source
+        lts_start_boundary: datetime | None = None
+        lts_end_boundary: datetime | None = None
+        raw_start_boundary: datetime | None = None
+        raw_end_boundary: datetime | None = None
+
+        if norm_source == DATA_SOURCE_STATISTICS:
+            if not all_lts_stats:
+                _LOGGER.warning(
+                    "No long-term statistics found for entity %s between %s and %s",
+                    device_cfg.source_entity,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                )
+                _send_progress_notification(
+                    self.hass,
+                    device_id=device_id,
+                    title=f"PowerCost - Aucune statistique trouvée ({device_cfg.name})",
+                    message=(
+                        f"⚠️ **Aucune statistique à long terme trouvée pour {device_cfg.name}**\n\n"
+                        f"- **Période demandée** : du {start_fmt} au {end_fmt}\n"
+                        f"- Aucune mesure n'a été trouvée dans les statistiques à long terme pour `{device_cfg.source_entity}`."
+                    ),
+                )
+                return {
+                    "success": False,
+                    "message": (
+                        f"Aucune statistique à long terme trouvée pour '{device_cfg.source_entity}' "
+                        f"entre {start_fmt} et {end_fmt}."
+                    ),
+                    "records_processed": 0,
+                }
+            lts_start_boundary = start_date
+            lts_end_boundary = end_date
+            raw_start_boundary = None
+            raw_end_boundary = None
+
+        elif norm_source == DATA_SOURCE_RECORDER:
+            earliest_raw_dt = await self._async_run_recorder_job(
+                self._find_earliest_state_timestamp,
+                start_date,
+                end_date,
+                device_cfg.source_entity,
+            )
+            if earliest_raw_dt is None:
+                _LOGGER.error(
+                    "No recorder history found for entity %s between %s and %s",
+                    device_cfg.source_entity,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                )
+                _send_progress_notification(
+                    self.hass,
+                    device_id=device_id,
+                    title=f"PowerCost - Données Recorder introuvables ({device_cfg.name})",
+                    message=(
+                        f"❌ **Aucune donnée Recorder trouvée pour {device_cfg.name}**\n\n"
+                        f"- **Période demandée** : du {start_fmt} au {end_fmt}\n"
+                        f"- Aucune donnée brute n'a été trouvée dans le Recorder pour `{device_cfg.source_entity}`. Les données ont probablement été purgées.\n\n"
+                        f"👉 *Utilisez le mode 'Mixte' ou 'Statistiques à long terme' pour exploiter l'historique.*"
+                    ),
+                )
+                return {
+                    "success": False,
+                    "message": (
+                        f"Aucune donnée brute du Recorder trouvée pour '{device_cfg.name}' "
+                        f"entre {start_fmt} et {end_fmt}. Les données ont probablement été purgées du Recorder."
+                    ),
+                    "records_processed": 0,
+                }
+
+            if earliest_raw_dt > start_date + timedelta(hours=2):
+                earliest_fmt = dt_util.as_local(earliest_raw_dt).strftime(fmt)
+                _LOGGER.error(
+                    "Recorder data missing for %s on period %s to %s (earliest available: %s)",
+                    device_cfg.name,
+                    start_fmt,
+                    earliest_fmt,
+                    earliest_fmt,
+                )
+                _send_progress_notification(
+                    self.hass,
+                    device_id=device_id,
+                    title=f"PowerCost - Données Recorder incomplètes ({device_cfg.name})",
+                    message=(
+                        f"❌ **Données Recorder incomplètes pour {device_cfg.name}**\n\n"
+                        f"- **Période demandée** : du {start_fmt} au {end_fmt}\n"
+                        f"- **Période manquante** : du {start_fmt} au {earliest_fmt}\n\n"
+                        f"Impossible de reconstruire l'historique avec l'option **Recorder uniquement** : les données précises ne sont pas disponibles sur la période du {start_fmt} au {earliest_fmt}. "
+                        f"La reconstruction avec le Recorder n'est possible qu'à partir du **{earliest_fmt}**.\n\n"
+                        f"👉 *Vous pouvez lancer la reconstruction à partir du **{earliest_fmt}**, ou choisir le mode **Mixte** pour utiliser les statistiques à long terme sur la période manquante.*"
+                    ),
+                )
+                return {
+                    "success": False,
+                    "message": (
+                        f"Données Recorder indisponibles pour '{device_cfg.name}' sur la période du {start_fmt} au {earliest_fmt}. "
+                        f"Impossible d'utiliser le Recorder sur cette période : les données précises ne sont disponibles qu'à partir du {earliest_fmt}. "
+                        f"Vous pouvez refaire la demande à partir du {earliest_fmt} ou choisir le mode 'mixed' pour compléter avec les statistiques à long terme."
+                    ),
+                    "records_processed": 0,
+                }
+
+            lts_start_boundary = None
+            lts_end_boundary = None
+            raw_start_boundary = start_date
+            raw_end_boundary = end_date
+
+        else:
+            # DATA_SOURCE_MIXED
+            earliest_raw_dt = await self._async_run_recorder_job(
+                self._find_earliest_state_timestamp,
+                start_date,
+                end_date,
+                device_cfg.source_entity,
+            )
+            if earliest_raw_dt is None:
+                lts_start_boundary = start_date
+                lts_end_boundary = end_date
+                raw_start_boundary = None
+                raw_end_boundary = None
+            elif earliest_raw_dt <= start_date + timedelta(hours=2):
+                lts_start_boundary = None
+                lts_end_boundary = None
+                raw_start_boundary = start_date
+                raw_end_boundary = end_date
+            else:
+                lts_start_boundary = start_date
+                lts_end_boundary = earliest_raw_dt
+                raw_start_boundary = earliest_raw_dt
+                raw_end_boundary = end_date
+
+        lts_period_used: tuple[datetime, datetime] | None = None
+        if lts_end_boundary is not None:
+            lts_period_used = (lts_start_boundary or start_date, lts_end_boundary)
+
+        raw_period_used: tuple[datetime, datetime] | None = None
+        if raw_start_boundary is not None:
+            raw_period_used = (raw_start_boundary, raw_end_boundary or end_date)
+
+        _LOGGER.info(
+            "Rebuild execution plan for '%s': source=%s, lts=%s to %s, raw=%s to %s",
+            device_cfg.name,
+            norm_source,
+            lts_period_used[0].isoformat() if lts_period_used else "None",
+            lts_period_used[1].isoformat() if lts_period_used else "None",
+            raw_period_used[0].isoformat() if raw_period_used else "None",
+            raw_period_used[1].isoformat() if raw_period_used else "None",
+        )
+
+        # 3. Purge existing statistics if requested (only done after validation passes!)
         if clear_existing:
             _LOGGER.info("Purging old statistics before rebuild for %s", device_cfg.name)
             await async_purge_device_data_and_history(self.hass, self.coordinator, device_id, notify_listeners=False)
 
-        # 1. Build list of entities to query
+        # 4. Build list of entities to query
         entity_ids_to_query = [device_cfg.source_entity]
         if pricing_cfg.mode == PRICING_MODE_VARIABLE and pricing_cfg.variable_price_entity:
             entity_ids_to_query.append(pricing_cfg.variable_price_entity)
@@ -419,45 +607,6 @@ class HistoryRebuilder:
             fallback_peak_price=fallback_peak_price,
         )
 
-        # Fetch LTS to build hourly consumption profile weights across the historical period
-        all_lts_stats: list[dict[str, Any]] = await self._async_run_recorder_job(
-            self._fetch_statistics,
-            start_date,
-            end_date,
-            device_cfg.source_entity,
-        )
-        profile_weights = self._compute_profile_weights(all_lts_stats)
-
-        # Detect the earliest actual raw state recorded in the database
-        earliest_raw_dt: datetime | None = await self._async_run_recorder_job(
-            self._find_earliest_state_timestamp,
-            start_date,
-            end_date,
-            device_cfg.source_entity,
-        )
-
-        # Determine LTS phase vs Raw phase
-        lts_end_boundary: datetime | None = None
-        raw_start_boundary: datetime | None = None
-
-        if earliest_raw_dt is None:
-            lts_end_boundary = end_date
-            raw_start_boundary = None
-        elif earliest_raw_dt <= start_date + timedelta(hours=1):
-            lts_end_boundary = None
-            raw_start_boundary = start_date
-        else:
-            lts_end_boundary = earliest_raw_dt
-            raw_start_boundary = earliest_raw_dt
-
-        _LOGGER.info(
-            "Rebuild execution plan for '%s': earliest_raw=%s, lts_end=%s, raw_start=%s",
-            device_cfg.name,
-            earliest_raw_dt.isoformat() if earliest_raw_dt else "None",
-            lts_end_boundary.isoformat() if lts_end_boundary else "None",
-            raw_start_boundary.isoformat() if raw_start_boundary else "None",
-        )
-
         # Runtime structures
         stats = DeviceStatistics(device_id=device_id)
         unit = device_cfg.source_unit
@@ -480,6 +629,8 @@ class HistoryRebuilder:
             for stat_item in all_lts_stats:
                 t_start = _parse_stat_timestamp(stat_item.get("start"))
                 t_end = _parse_stat_timestamp(stat_item.get("end"))
+                if lts_start_boundary is not None and t_end <= lts_start_boundary:
+                    continue
                 if t_start >= lts_end_boundary:
                     break
 
@@ -525,16 +676,42 @@ class HistoryRebuilder:
                     total_records_processed += 1
 
         # Phase 2: Replay high-precision Raw States
+        num_chunks = 0
         if raw_start_boundary is not None:
+            raw_end = raw_end_boundary or end_date
             chunk_delta = timedelta(days=CHUNK_DURATION_DAYS)
             chunks: list[tuple[datetime, datetime]] = []
             c_start = raw_start_boundary
-            while c_start < end_date:
-                c_end = min(c_start + chunk_delta, end_date)
+            while c_start < raw_end:
+                c_end = min(c_start + chunk_delta, raw_end)
                 chunks.append((c_start, c_end))
                 c_start = c_end
 
             num_chunks = max(1, len(chunks))
+
+            source_title_desc = {
+                DATA_SOURCE_RECORDER: "Recorder uniquement (haute précision)",
+                DATA_SOURCE_STATISTICS: "Statistiques à long terme (LTS)",
+                DATA_SOURCE_MIXED: "Mixte (Recorder haute précision + LTS)",
+            }.get(norm_source, norm_source)
+
+            sources_plan_lines = [f"- **Mode demandé** : {source_title_desc}"]
+            if lts_period_used and raw_period_used:
+                sources_plan_lines.append(
+                    f"- **Plan d'exécution** :\n"
+                    f"  - 📊 LTS : du {dt_util.as_local(lts_period_used[0]).strftime(fmt)} au {dt_util.as_local(lts_period_used[1]).strftime(fmt)}\n"
+                    f"  - ⚡ Recorder : du {dt_util.as_local(raw_period_used[0]).strftime(fmt)} au {dt_util.as_local(raw_period_used[1]).strftime(fmt)}"
+                )
+            elif raw_period_used:
+                sources_plan_lines.append(
+                    f"- **Période brute (Recorder)** : du {dt_util.as_local(raw_period_used[0]).strftime(fmt)} au {dt_util.as_local(raw_period_used[1]).strftime(fmt)}"
+                )
+            elif lts_period_used:
+                sources_plan_lines.append(
+                    f"- **Période LTS** : du {dt_util.as_local(lts_period_used[0]).strftime(fmt)} au {dt_util.as_local(lts_period_used[1]).strftime(fmt)}"
+                )
+
+            sources_plan_lines.append(f"- **Découpage** : {num_chunks} tranche{'s' if num_chunks > 1 else ''} de {CHUNK_DURATION_DAYS} jours")
 
             _send_progress_notification(
                 self.hass,
@@ -542,9 +719,8 @@ class HistoryRebuilder:
                 title=f"PowerCost - Démarrage du calcul ({device_cfg.name})",
                 message=(
                     f"⏳ **Reconstruction démarrée pour {device_cfg.name}**\n\n"
-                    f"- **Période brute** : du {raw_start_boundary.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}\n"
-                    f"- **Découpage** : {num_chunks} tranche{'s' if num_chunks > 1 else ''} de {CHUNK_DURATION_DAYS} jours\n"
-                    f"- Traitement haute précision en cours..."
+                    + "\n".join(sources_plan_lines)
+                    + "\n- Traitement haute précision en cours..."
                 ),
             )
 
@@ -623,7 +799,7 @@ class HistoryRebuilder:
                     message=(
                         f"⏳ **Reconstruction en cours pour {device_cfg.name}**\n\n"
                         f"- **Progression** : Tranche {idx}/{num_chunks} ({pct}%)\n"
-                        f"- **Tranche traitée** : du {chunk_start.strftime('%d/%m/%Y')} au {chunk_end.strftime('%d/%m/%Y')}\n"
+                        f"- **Tranche traitée** : du {dt_util.as_local(chunk_start).strftime('%d/%m/%Y')} au {dt_util.as_local(chunk_end).strftime('%d/%m/%Y')}\n"
                         f"- **Enregistrements cumulés** : {total_records_processed}\n"
                         f"- **Consommation calculée** : {stats.energy_total:.2f} kWh\n"
                         f"- **Coût cumulé actuel** : {stats.cost_total:.2f} €"
@@ -632,11 +808,13 @@ class HistoryRebuilder:
 
         # 5. Check if any data was processed
         if total_records_processed == 0:
+            source_label = "le Recorder" if norm_source == DATA_SOURCE_RECORDER else ("les statistiques LTS" if norm_source == DATA_SOURCE_STATISTICS else "le Recorder ou les statistiques LTS")
             _LOGGER.warning(
-                "No recorder history found for entity %s between %s and %s",
+                "No history data found for entity %s between %s and %s (source: %s)",
                 device_cfg.source_entity,
                 start_date.isoformat(),
                 end_date.isoformat(),
+                norm_source,
             )
             _send_progress_notification(
                 self.hass,
@@ -644,15 +822,15 @@ class HistoryRebuilder:
                 title="PowerCost - Aucune donnée trouvée",
                 message=(
                     f"⚠️ **Aucune donnée trouvée pour {device_cfg.name}**\n\n"
-                    f"- **Période** : du {start_date.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}\n"
-                    f"- Aucune mesure n'a été trouvée dans le Recorder pour `{device_cfg.source_entity}`."
+                    f"- **Période** : du {start_fmt} au {end_fmt}\n"
+                    f"- Aucune mesure n'a été trouvée dans {source_label} pour `{device_cfg.source_entity}`."
                 ),
             )
             return {
                 "success": False,
                 "message": (
-                    f"Aucune donnée d'historique trouvée dans le Recorder pour "
-                    f"'{device_cfg.source_entity}' entre {start_date.strftime('%d/%m/%Y')} et {end_date.strftime('%d/%m/%Y')}."
+                    f"Aucune donnée d'historique trouvée dans {source_label} pour "
+                    f"'{device_cfg.source_entity}' entre {start_fmt} et {end_fmt}."
                 ),
                 "records_processed": 0,
             }
@@ -689,7 +867,7 @@ class HistoryRebuilder:
             imported_stats_count,
         )
 
-        # 8. Send final completion notification
+        # 9. Send final completion notification
         lts_info = (
             f"\n- **Points de courbes injectés** : {imported_stats_count} points horaires (graphiques jour, mois, total et HC/HP à jour !)"
             if imported_stats_count > 0
@@ -702,14 +880,34 @@ class HistoryRebuilder:
                 f"\n- **Coût Heures Pleines** : {stats.cost_total_peak:.2f} € ({stats.energy_total_peak:.2f} kWh)"
             )
 
+        sources_used_lines = []
+        if lts_period_used and raw_period_used:
+            sources_used_lines.append(
+                f"\n- **Sources utilisées par période** :"
+                f"\n  - 📊 **Statistiques à long terme (LTS)** : du {dt_util.as_local(lts_period_used[0]).strftime(fmt)} au {dt_util.as_local(lts_period_used[1]).strftime(fmt)}"
+                f"\n  - ⚡ **Recorder (données précises)** : du {dt_util.as_local(raw_period_used[0]).strftime(fmt)} au {dt_util.as_local(raw_period_used[1]).strftime(fmt)}"
+            )
+        elif raw_period_used:
+            sources_used_lines.append(
+                f"\n- **Source de données utilisée** : ⚡ **Recorder uniquement (données précises)** du {dt_util.as_local(raw_period_used[0]).strftime(fmt)} au {dt_util.as_local(raw_period_used[1]).strftime(fmt)}"
+            )
+        elif lts_period_used:
+            sources_used_lines.append(
+                f"\n- **Source de données utilisée** : 📊 **Statistiques à long terme uniquement (LTS)** du {dt_util.as_local(lts_period_used[0]).strftime(fmt)} au {dt_util.as_local(lts_period_used[1]).strftime(fmt)}"
+            )
+        sources_breakdown = "".join(sources_used_lines)
+
+        chunk_summary = f"- **Tranches traitées** : {num_chunks}/{num_chunks} (100%)\n" if raw_start_boundary is not None else ""
+
         _send_progress_notification(
             self.hass,
             device_id=device_id,
             title="PowerCost - Historique reconstruit avec succès",
             message=(
                 f"✅ **Reconstruction terminée pour {device_cfg.name}**\n\n"
-                f"- **Période totale** : du {start_date.strftime('%d/%m/%Y')} au {end_date.strftime('%d/%m/%Y')}\n"
-                f"- **Tranches traitées** : {num_chunks}/{num_chunks} (100%)\n"
+                f"- **Période totale** : du {start_fmt} au {end_fmt}"
+                f"{sources_breakdown}\n"
+                f"{chunk_summary}"
                 f"- **Total enregistrements traités** : {total_records_processed}\n"
                 f"- **Consommation totale** : {stats.energy_total:.2f} kWh\n"
                 f"- **Coût total calculé** : {stats.cost_total:.2f} €"
@@ -725,6 +923,25 @@ class HistoryRebuilder:
             "energy_total": stats.energy_total,
             "records_processed": total_records_processed,
             "statistics_imported": imported_stats_count,
+            "data_source_requested": norm_source,
+            "periods_used": {
+                "lts": (
+                    {
+                        "start": lts_period_used[0].isoformat(),
+                        "end": lts_period_used[1].isoformat(),
+                    }
+                    if lts_period_used
+                    else None
+                ),
+                "recorder": (
+                    {
+                        "start": raw_period_used[0].isoformat(),
+                        "end": raw_period_used[1].isoformat(),
+                    }
+                    if raw_period_used
+                    else None
+                ),
+            },
         }
 
     def _build_cumulative_curve_points(

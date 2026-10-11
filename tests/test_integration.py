@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from homeassistant.const import STATE_UNAVAILABLE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.electricity_cost.const import (
@@ -110,3 +110,84 @@ async def test_full_setup_and_sensor_updates(hass: HomeAssistant):
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.entry_id not in hass.data[DOMAIN]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_history_service_with_data_source(hass: HomeAssistant):
+    """Test calling rebuild_history service with data_source parameter."""
+    from homeassistant.exceptions import HomeAssistantError
+    from custom_components.electricity_cost.const import SERVICE_REBUILD_HISTORY
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="PowerCost",
+        data={
+            CONF_PRICING_MODE: PRICING_MODE_VARIABLE,
+            CONF_VARIABLE_PRICE_ENTITY: "sensor.test_price",
+            CONF_DEVICES: [
+                {
+                    CONF_DEVICE_ID: "dev_wash",
+                    CONF_DEVICE_NAME: "Lave Linge",
+                    CONF_SOURCE_ENTITY: "sensor.wash_power",
+                    CONF_SOURCE_TYPE: SOURCE_TYPE_POWER,
+                }
+            ],
+        },
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    rebuilder = hass.data[DOMAIN][entry.entry_id]["rebuilder"]
+
+    # Test error when recorder only is requested but recorder has no data
+    rebuilder._fetch_history = patch.object(rebuilder, "_fetch_history", return_value={"sensor.wash_power": []})
+    with patch.object(rebuilder, "_find_earliest_state_timestamp", return_value=datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)):
+        with pytest.raises(HomeAssistantError) as exc_info:
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_REBUILD_HISTORY,
+                {
+                    "device_id": "dev_wash",
+                    "start_date": "2026-01-01T00:00:00+00:00",
+                    "end_date": "2026-03-01T00:00:00+00:00",
+                    "data_source": "recorder",
+                },
+                blocking=True,
+            )
+        assert "Données Recorder indisponibles" in str(exc_info.value)
+        assert "qu'à partir du" in str(exc_info.value)
+
+    # Test success when recorder only has complete data
+    t_start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    with patch.object(rebuilder, "_find_earliest_state_timestamp", return_value=t_start):
+        with patch.object(
+            rebuilder,
+            "_fetch_history",
+            return_value={
+                "sensor.wash_power": [
+                    State("sensor.wash_power", "1000", last_updated=t_start),
+                    State("sensor.wash_power", "1000", last_updated=t_start + timedelta(hours=1)),
+                ],
+                "sensor.test_price": [
+                    State("sensor.test_price", "0.20", last_updated=t_start),
+                ],
+            },
+        ):
+            await hass.services.async_call(
+                DOMAIN,
+                SERVICE_REBUILD_HISTORY,
+                {
+                    "device_id": "dev_wash",
+                    "start_date": "2026-01-01T00:00:00+00:00",
+                    "end_date": "2026-01-01T01:00:00+00:00",
+                    "data_source": "recorder",
+                },
+                blocking=True,
+            )
+
+    stats = hass.data[DOMAIN][entry.entry_id]["coordinator"].statistics["dev_wash"]
+    assert pytest.approx(stats.energy_total, 0.01) == 1.0
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()

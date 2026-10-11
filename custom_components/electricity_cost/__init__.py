@@ -17,11 +17,15 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ATTR_CLEAR_EXISTING,
+    ATTR_DATA_SOURCE,
     ATTR_DEVICE_ID,
     ATTR_END_DATE,
     ATTR_REBUILD_ALL,
     ATTR_START_DATE,
     CONF_DEVICES,
+    DATA_SOURCE_MIXED,
+    DATA_SOURCE_RECORDER,
+    DATA_SOURCE_STATISTICS,
     DOMAIN,
     SERVICE_REBUILD_HISTORY,
     SERVICE_RESET_STATISTICS,
@@ -45,6 +49,20 @@ REBUILD_SERVICE_SCHEMA = vol.Schema(
         vol.Optional("area_id"): vol.Any(cv.string, [cv.string]),
         vol.Required(ATTR_START_DATE): cv.datetime,
         vol.Optional(ATTR_END_DATE): cv.datetime,
+        vol.Optional(ATTR_DATA_SOURCE, default=DATA_SOURCE_MIXED): vol.In(
+            [
+                DATA_SOURCE_MIXED,
+                DATA_SOURCE_RECORDER,
+                DATA_SOURCE_STATISTICS,
+                "auto",
+                "hybrid",
+                "raw",
+                "recorder_only",
+                "lts",
+                "lts_only",
+                "long_term",
+            ]
+        ),
         vol.Optional(ATTR_REBUILD_ALL, default=False): cv.boolean,
         vol.Optional(ATTR_CLEAR_EXISTING, default=True): cv.boolean,
     }
@@ -177,6 +195,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             end_date: datetime = call.data.get(ATTR_END_DATE) or dt_util.utcnow()
             rebuild_all = call.data.get(ATTR_REBUILD_ALL, False)
             clear_existing = call.data.get(ATTR_CLEAR_EXISTING, True)
+            data_source = call.data.get(ATTR_DATA_SOURCE, DATA_SOURCE_MIXED)
 
             # Ensure UTC datetime
             if start_date.tzinfo is None:
@@ -215,7 +234,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     if dev_id in c.devices:
                         try:
                             res = await r.async_rebuild_device(
-                                dev_id, start_date, end_date, clear_existing=clear_existing
+                                dev_id,
+                                start_date,
+                                end_date,
+                                clear_existing=clear_existing,
+                                data_source=data_source,
                             )
                             if res.get("success"):
                                 total_rebuilt += 1

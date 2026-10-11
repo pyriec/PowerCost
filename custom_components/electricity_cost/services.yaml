@@ -21,6 +21,20 @@ rebuild_history:
       required: false
       selector:
         datetime:
+    data_source:
+      name: Source des données
+      description: "Choisissez la base à exploiter : Recorder uniquement (données précises), Statistiques à long terme uniquement, ou Mixte (Recorder si disponible, sinon Statistiques)."
+      required: false
+      default: mixed
+      selector:
+        select:
+          options:
+            - label: "Mixte (Recorder si disponible, sinon Statistiques long terme)"
+              value: "mixed"
+            - label: "Recorder uniquement (données précises)"
+              value: "recorder"
+            - label: "Statistiques à long terme uniquement (LTS)"
+              value: "statistics"
     rebuild_all:
       name: Reconstruire tous les appareils
       description: Définir sur Vrai pour reconstruire l'ensemble des appareils configurés.

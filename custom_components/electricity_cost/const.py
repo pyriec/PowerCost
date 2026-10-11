@@ -123,4 +123,15 @@ ATTR_START_DATE: Final = "start_date"
 ATTR_END_DATE: Final = "end_date"
 ATTR_REBUILD_ALL: Final = "rebuild_all"
 ATTR_CLEAR_EXISTING: Final = "clear_existing"
+ATTR_DATA_SOURCE: Final = "data_source"
+
+DATA_SOURCE_MIXED: Final = "mixed"
+DATA_SOURCE_RECORDER: Final = "recorder"
+DATA_SOURCE_STATISTICS: Final = "statistics"
+
+DATA_SOURCES: Final = [
+    DATA_SOURCE_MIXED,
+    DATA_SOURCE_RECORDER,
+    DATA_SOURCE_STATISTICS,
+]
 

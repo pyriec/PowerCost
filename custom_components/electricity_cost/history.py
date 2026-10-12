@@ -37,6 +37,12 @@ from .const import (
     SENSOR_COST_YEAR,
     SENSOR_COST_YEAR_OFFPEAK,
     SENSOR_COST_YEAR_PEAK,
+    SENSOR_COST_MAX_DAY,
+    SENSOR_COST_MAX_MONTH,
+    SENSOR_COST_MAX_YEAR,
+    SENSOR_COST_AVG_DAY,
+    SENSOR_COST_AVG_MONTH,
+    SENSOR_COST_AVG_YEAR,
     SENSOR_ENERGY_DAY_OFFPEAK,
     SENSOR_ENERGY_DAY_PEAK,
     SENSOR_ENERGY_MONTH_OFFPEAK,
@@ -58,6 +64,138 @@ _LOGGER = logging.getLogger(__name__)
 
 # Duration of each processing chunk (15 days)
 CHUNK_DURATION_DAYS = 15
+
+SENSOR_METADATA_DEFAULTS: dict[str, dict[str, Any]] = {
+    SENSOR_COST_DAY: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_MONTH: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_YEAR: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_TOTAL: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_DAY_OFFPEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_DAY_PEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_MONTH_OFFPEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_MONTH_PEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_YEAR_OFFPEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_YEAR_PEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_TOTAL_OFFPEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_COST_TOTAL_PEAK: {"unit_of_measurement": "€", "device_class": "monetary", "state_class": "total"},
+    SENSOR_ENERGY_DAY_OFFPEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total"},
+    SENSOR_ENERGY_DAY_PEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total"},
+    SENSOR_ENERGY_MONTH_OFFPEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total"},
+    SENSOR_ENERGY_MONTH_PEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total"},
+    SENSOR_ENERGY_YEAR_OFFPEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total"},
+    SENSOR_ENERGY_YEAR_PEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total"},
+    SENSOR_ENERGY_TOTAL_OFFPEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total_increasing"},
+    SENSOR_ENERGY_TOTAL_PEAK: {"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total_increasing"},
+    SENSOR_COST_MAX_DAY: {"unit_of_measurement": "€", "device_class": None, "state_class": "measurement"},
+    SENSOR_COST_MAX_MONTH: {"unit_of_measurement": "€", "device_class": None, "state_class": "measurement"},
+    SENSOR_COST_MAX_YEAR: {"unit_of_measurement": "€", "device_class": None, "state_class": "measurement"},
+    SENSOR_COST_AVG_DAY: {"unit_of_measurement": "€", "device_class": None, "state_class": "measurement"},
+    SENSOR_COST_AVG_MONTH: {"unit_of_measurement": "€", "device_class": None, "state_class": "measurement"},
+    SENSOR_COST_AVG_YEAR: {"unit_of_measurement": "€", "device_class": None, "state_class": "measurement"},
+}
+
+
+def _get_sensor_stat_value(stats: DeviceStatistics, sensor_type: str) -> float | None:
+    """Get the current rounded value for a given sensor type from device statistics."""
+    mapping: dict[str, float] = {
+        SENSOR_COST_DAY: stats.cost_today,
+        SENSOR_COST_MONTH: stats.cost_this_month,
+        SENSOR_COST_YEAR: stats.cost_this_year,
+        SENSOR_COST_TOTAL: stats.cost_total,
+        SENSOR_COST_DAY_OFFPEAK: stats.cost_today_offpeak,
+        SENSOR_COST_DAY_PEAK: stats.cost_today_peak,
+        SENSOR_COST_MONTH_OFFPEAK: stats.cost_this_month_offpeak,
+        SENSOR_COST_MONTH_PEAK: stats.cost_this_month_peak,
+        SENSOR_COST_YEAR_OFFPEAK: stats.cost_this_year_offpeak,
+        SENSOR_COST_YEAR_PEAK: stats.cost_this_year_peak,
+        SENSOR_COST_TOTAL_OFFPEAK: stats.cost_total_offpeak,
+        SENSOR_COST_TOTAL_PEAK: stats.cost_total_peak,
+        SENSOR_ENERGY_DAY_OFFPEAK: stats.energy_today_offpeak,
+        SENSOR_ENERGY_DAY_PEAK: stats.energy_today_peak,
+        SENSOR_ENERGY_MONTH_OFFPEAK: stats.energy_this_month_offpeak,
+        SENSOR_ENERGY_MONTH_PEAK: stats.energy_this_month_peak,
+        SENSOR_ENERGY_YEAR_OFFPEAK: stats.energy_this_year_offpeak,
+        SENSOR_ENERGY_YEAR_PEAK: stats.energy_this_year_peak,
+        SENSOR_ENERGY_TOTAL_OFFPEAK: stats.energy_total_offpeak,
+        SENSOR_ENERGY_TOTAL_PEAK: stats.energy_total_peak,
+        SENSOR_COST_MAX_DAY: stats.max_cost_day,
+        SENSOR_COST_MAX_MONTH: stats.max_cost_month,
+        SENSOR_COST_MAX_YEAR: stats.max_cost_year,
+        SENSOR_COST_AVG_DAY: stats.avg_cost_day,
+        SENSOR_COST_AVG_MONTH: stats.avg_cost_month,
+        SENSOR_COST_AVG_YEAR: stats.avg_cost_year,
+    }
+    val = mapping.get(sensor_type)
+    return round(val, 2) if val is not None else None
+
+
+class _RawStatesTracker:
+    """Tracks state changes for PowerCost sensors during high-precision replay."""
+
+    def __init__(self, active_sensors: list[str]) -> None:
+        self.active_sensors = active_sensors
+        self.raw_states: dict[str, list[tuple[float, float]]] = {s: [] for s in active_sensors}
+        self.last_values: dict[str, float] = {}
+        self.last_timestamps: dict[str, float] = {}
+
+    def record_initial_state(self, stats: DeviceStatistics, ts: float) -> None:
+        """Record initial starting point for each active sensor."""
+        for s_key in self.active_sensors:
+            val = _get_sensor_stat_value(stats, s_key) or 0.0
+            self.raw_states[s_key].append((ts, val))
+            self.last_values[s_key] = val
+            self.last_timestamps[s_key] = ts
+
+    def record_rollover(self, period_type: str, ts: float) -> None:
+        """Record reset to 0.0 at rollover transition."""
+        if period_type == "day":
+            keys = [
+                SENSOR_COST_DAY,
+                SENSOR_COST_DAY_OFFPEAK,
+                SENSOR_COST_DAY_PEAK,
+                SENSOR_ENERGY_DAY_OFFPEAK,
+                SENSOR_ENERGY_DAY_PEAK,
+            ]
+        elif period_type == "month":
+            keys = [
+                SENSOR_COST_MONTH,
+                SENSOR_COST_MONTH_OFFPEAK,
+                SENSOR_COST_MONTH_PEAK,
+                SENSOR_ENERGY_MONTH_OFFPEAK,
+                SENSOR_ENERGY_MONTH_PEAK,
+            ]
+        elif period_type == "year":
+            keys = [
+                SENSOR_COST_YEAR,
+                SENSOR_COST_YEAR_OFFPEAK,
+                SENSOR_COST_YEAR_PEAK,
+                SENSOR_ENERGY_YEAR_OFFPEAK,
+                SENSOR_ENERGY_YEAR_PEAK,
+            ]
+        else:
+            return
+
+        for s_key in keys:
+            if s_key in self.active_sensors:
+                last_ts = self.last_timestamps.get(s_key, 0.0)
+                record_ts = ts if ts > last_ts else last_ts + 0.001
+                self.raw_states[s_key].append((record_ts, 0.0))
+                self.last_values[s_key] = 0.0
+                self.last_timestamps[s_key] = record_ts
+
+    def record_changes(self, stats: DeviceStatistics, ts: float) -> None:
+        """Record sensor values if they changed."""
+        for s_key in self.active_sensors:
+            val = _get_sensor_stat_value(stats, s_key)
+            if val is None:
+                continue
+            if s_key not in self.last_values or val != self.last_values[s_key]:
+                last_ts = self.last_timestamps.get(s_key, 0.0)
+                record_ts = ts if ts > last_ts else last_ts + 0.001
+                self.raw_states[s_key].append((record_ts, val))
+                self.last_values[s_key] = val
+                self.last_timestamps[s_key] = record_ts
+
 
 
 def normalize_data_source(val: str | None) -> str:
@@ -307,6 +445,7 @@ class HistoryRebuilder:
         hourly_cost_deltas_peak: dict[datetime, float],
         hourly_energy_deltas_offpeak: dict[datetime, float],
         hourly_energy_deltas_peak: dict[datetime, float],
+        raw_states_tracker: _RawStatesTracker | None = None,
     ) -> None:
         """Distribute energy and cost across hour slices, applying accurate tariffs per slice."""
         slices = self._slice_step_by_hours(step_start_utc, step_end_utc)
@@ -342,6 +481,21 @@ class HistoryRebuilder:
             )
 
             dt_local = dt_util.as_local(s_end)
+
+            if raw_states_tracker is not None:
+                day_str = dt_local.strftime("%Y-%m-%d")
+                if stats.current_day and day_str != stats.current_day:
+                    midnight_ts = dt_local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).timestamp()
+                    raw_states_tracker.record_rollover("day", midnight_ts)
+                month_str = dt_local.strftime("%Y-%m")
+                if stats.current_month and month_str != stats.current_month:
+                    month_start_ts = dt_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).timestamp()
+                    raw_states_tracker.record_rollover("month", month_start_ts)
+                year_str = dt_local.strftime("%Y")
+                if stats.current_year and year_str != stats.current_year:
+                    year_start_ts = dt_local.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).timestamp()
+                    raw_states_tracker.record_rollover("year", year_start_ts)
+
             stats.add_consumption(
                 energy_kwh=slice_energy,
                 cost=detailed.total_cost,
@@ -351,6 +505,9 @@ class HistoryRebuilder:
                 energy_offpeak=detailed.energy_offpeak,
                 energy_peak=detailed.energy_peak,
             )
+
+            if raw_states_tracker is not None:
+                raw_states_tracker.record_changes(stats, s_end.timestamp())
 
             # Record in hourly bucket at the START of the hour
             h_bucket = s_start.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
@@ -704,6 +861,40 @@ class HistoryRebuilder:
 
         # Phase 2: Replay high-precision Raw States
         num_chunks = 0
+        active_sensor_keys: list[str] = [
+            SENSOR_COST_DAY,
+            SENSOR_COST_MONTH,
+            SENSOR_COST_YEAR,
+            SENSOR_COST_TOTAL,
+            SENSOR_COST_MAX_DAY,
+            SENSOR_COST_MAX_MONTH,
+            SENSOR_COST_MAX_YEAR,
+            SENSOR_COST_AVG_DAY,
+            SENSOR_COST_AVG_MONTH,
+            SENSOR_COST_AVG_YEAR,
+        ]
+        if pricing_cfg.mode == PRICING_MODE_PEAK_OFFPEAK:
+            active_sensor_keys.extend([
+                SENSOR_COST_DAY_OFFPEAK,
+                SENSOR_COST_DAY_PEAK,
+                SENSOR_COST_MONTH_OFFPEAK,
+                SENSOR_COST_MONTH_PEAK,
+                SENSOR_COST_YEAR_OFFPEAK,
+                SENSOR_COST_YEAR_PEAK,
+                SENSOR_COST_TOTAL_OFFPEAK,
+                SENSOR_COST_TOTAL_PEAK,
+                SENSOR_ENERGY_DAY_OFFPEAK,
+                SENSOR_ENERGY_DAY_PEAK,
+                SENSOR_ENERGY_MONTH_OFFPEAK,
+                SENSOR_ENERGY_MONTH_PEAK,
+                SENSOR_ENERGY_YEAR_OFFPEAK,
+                SENSOR_ENERGY_YEAR_PEAK,
+                SENSOR_ENERGY_TOTAL_OFFPEAK,
+                SENSOR_ENERGY_TOTAL_PEAK,
+            ])
+        raw_states_tracker = _RawStatesTracker(active_sensor_keys)
+        first_raw_state_recorded = False
+
         if raw_start_boundary is not None:
             raw_end = raw_end_boundary or end_date
             chunk_delta = timedelta(days=CHUNK_DURATION_DAYS)
@@ -767,6 +958,10 @@ class HistoryRebuilder:
                             continue
 
                         current_ts = state.last_updated.timestamp()
+                        if not first_raw_state_recorded:
+                            raw_states_tracker.record_initial_state(stats, current_ts)
+                            first_raw_state_recorded = True
+
                         if unit is None:
                             unit = state.attributes.get("unit_of_measurement")
 
@@ -811,6 +1006,7 @@ class HistoryRebuilder:
                                     hourly_cost_deltas_peak=hourly_cost_deltas_peak,
                                     hourly_energy_deltas_offpeak=hourly_energy_deltas_offpeak,
                                     hourly_energy_deltas_peak=hourly_energy_deltas_peak,
+                                    raw_states_tracker=raw_states_tracker,
                                 )
 
                         last_val = val
@@ -876,6 +1072,47 @@ class HistoryRebuilder:
         stats.last_source_unit = unit
         stats.last_rebuild_timestamp = dt_util.utcnow().timestamp()
 
+        # 6.5 Inject high-precision states into Recorder database for the recorder period
+        imported_recorder_states_count = 0
+        if raw_start_boundary is not None and first_raw_state_recorded:
+            from homeassistant.helpers import entity_registry as er
+
+            ent_reg = er.async_get(self.hass)
+            unique_prefix = f"{self.coordinator.entry_id}_{device_cfg.device_id}_"
+            states_by_entity_id: dict[str, list[tuple[float, float]]] = {}
+            sensor_metadata: dict[str, dict[str, Any]] = {}
+
+            for s_key in active_sensor_keys:
+                ent_id = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{unique_prefix}{s_key}")
+                if not ent_id:
+                    candidate = f"sensor.{device_cfg.device_id}_{s_key}"
+                    if candidate in self.hass.states.async_entity_ids("sensor"):
+                        ent_id = candidate
+
+                pts = raw_states_tracker.raw_states.get(s_key, [])
+                if ent_id and pts:
+                    states_by_entity_id[ent_id] = pts
+                    meta_def = SENSOR_METADATA_DEFAULTS.get(s_key, {})
+                    ent_entry = ent_reg.async_get(ent_id) if hasattr(ent_reg, "async_get") else None
+                    friendly_name = getattr(ent_entry, "name", None) or getattr(ent_entry, "original_name", None)
+                    sensor_metadata[ent_id] = {
+                        "unit_of_measurement": meta_def.get("unit_of_measurement"),
+                        "device_class": meta_def.get("device_class"),
+                        "state_class": meta_def.get("state_class"),
+                        "friendly_name": friendly_name,
+                    }
+
+            if states_by_entity_id:
+                raw_start_ts = raw_start_boundary.timestamp()
+                raw_end_ts = (raw_end_boundary or end_date).timestamp()
+                imported_recorder_states_count = await self._async_run_recorder_job(
+                    self._insert_recorder_states_sync,
+                    states_by_entity_id,
+                    sensor_metadata,
+                    raw_start_ts,
+                    raw_end_ts,
+                )
+
         # 7. Inject retroactive statistics curves into Home Assistant Long-Term Statistics
         imported_stats_count = await self._async_inject_historical_statistics(
             device_cfg=device_cfg,
@@ -894,17 +1131,24 @@ class HistoryRebuilder:
         self.coordinator.async_update_listeners()
 
         _LOGGER.info(
-            "Rebuild complete for %s. Total cost: %.2f EUR, Total energy: %.2f kWh across %d records. Imported %d LTS points.",
+            "Rebuild complete for %s. Total cost: %.2f EUR, Total energy: %.2f kWh across %d records. "
+            "Imported %d recorder states, %d LTS points.",
             device_cfg.name,
             stats.cost_total,
             stats.energy_total,
             total_records_processed,
+            imported_recorder_states_count,
             imported_stats_count,
         )
 
         # 9. Send final completion notification
+        recorder_states_info = (
+            f"\n- ⚡ **États haute précision enregistrés dans le Recorder** : {imported_recorder_states_count} états"
+            if imported_recorder_states_count > 0
+            else ""
+        )
         lts_info = (
-            f"\n- **Points de courbes injectés** : {imported_stats_count} points horaires (graphiques jour, mois, total et HC/HP à jour !)"
+            f"\n- 📊 **Points de courbes injectés (LTS)** : {imported_stats_count} points horaires (graphiques jour, mois, total et HC/HP à jour !)"
             if imported_stats_count > 0
             else ""
         )
@@ -947,6 +1191,7 @@ class HistoryRebuilder:
                 f"- **Consommation totale** : {stats.energy_total:.2f} kWh\n"
                 f"- **Coût total calculé** : {stats.cost_total:.2f} €"
                 f"{tariff_breakdown}"
+                f"{recorder_states_info}"
                 f"{lts_info}"
             ),
         )
@@ -957,6 +1202,7 @@ class HistoryRebuilder:
             "cost_total": stats.cost_total,
             "energy_total": stats.energy_total,
             "records_processed": total_records_processed,
+            "recorder_states_imported": imported_recorder_states_count,
             "statistics_imported": imported_stats_count,
             "data_source_requested": norm_source,
             "periods_used": {
@@ -1259,3 +1505,141 @@ class HistoryRebuilder:
                 err,
             )
             return []
+
+    def _insert_recorder_states_sync(
+        self,
+        states_by_entity_id: dict[str, list[tuple[float, float]]],
+        sensor_metadata: dict[str, dict[str, Any]],
+        start_ts: float,
+        end_ts: float,
+    ) -> int:
+        """Insert high-precision historical states directly into the recorder database."""
+        if not states_by_entity_id:
+            return 0
+
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.db_schema import (
+                StateAttributes,
+                States,
+                StatesMeta,
+            )
+            from homeassistant.components.recorder.util import session_scope
+            from homeassistant.helpers.json import json_bytes
+            from sqlalchemy import delete, select
+
+            try:
+                rec = get_instance(self.hass)
+            except Exception:
+                rec = None
+
+            if not rec:
+                _LOGGER.debug("Recorder instance not available; skipping raw state insertion")
+                return 0
+
+            total_saved = 0
+            with session_scope(hass=self.hass) as session:
+                all_db_states: list[States] = []
+
+                for entity_id, points in states_by_entity_id.items():
+                    if not points:
+                        continue
+
+                    # 1. Resolve or create metadata_id
+                    meta_id: int | None = None
+                    if hasattr(rec, "states_meta_manager") and getattr(rec.states_meta_manager, "active", False):
+                        res_m = rec.states_meta_manager.get(entity_id, session, True)
+                        if isinstance(res_m, int):
+                            meta_id = res_m
+                    if meta_id is None:
+                        meta_row = session.execute(
+                            select(StatesMeta).where(StatesMeta.entity_id == entity_id)
+                        ).scalar_one_or_none()
+                        if not meta_row:
+                            meta_row = StatesMeta(entity_id=entity_id)
+                            session.add(meta_row)
+                            session.flush()
+                        meta_id = meta_row.metadata_id
+                        if hasattr(rec, "states_meta_manager") and hasattr(rec.states_meta_manager, "_id_map"):
+                            rec.states_meta_manager._id_map[entity_id] = meta_id
+
+                    # 2. Resolve or create attributes_id
+                    meta_info = sensor_metadata.get(entity_id, {})
+                    attrs_dict: dict[str, Any] = {}
+                    if meta_info.get("unit_of_measurement"):
+                        attrs_dict["unit_of_measurement"] = meta_info["unit_of_measurement"]
+                    if meta_info.get("device_class"):
+                        attrs_dict["device_class"] = meta_info["device_class"]
+                    if meta_info.get("state_class"):
+                        attrs_dict["state_class"] = meta_info["state_class"]
+                    if meta_info.get("friendly_name"):
+                        attrs_dict["friendly_name"] = meta_info["friendly_name"]
+
+                    attrs_bytes = json_bytes(attrs_dict)
+                    shared_attrs_str = attrs_bytes.decode("utf-8")
+                    h = StateAttributes.hash_shared_attrs_bytes(attrs_bytes)
+
+                    attr_id: int | None = None
+                    if hasattr(rec, "state_attributes_manager"):
+                        res_a = rec.state_attributes_manager.get(shared_attrs_str, h, session)
+                        if isinstance(res_a, int):
+                            attr_id = res_a
+                    if attr_id is None:
+                        attr_row = session.execute(
+                            select(StateAttributes).where(
+                                StateAttributes.hash == h,
+                                StateAttributes.shared_attrs == shared_attrs_str,
+                            )
+                        ).scalar_one_or_none()
+                        if not attr_row:
+                            attr_row = StateAttributes(hash=h, shared_attrs=shared_attrs_str)
+                            session.add(attr_row)
+                            session.flush()
+                        attr_id = attr_row.attributes_id
+                        if hasattr(rec, "state_attributes_manager") and hasattr(rec.state_attributes_manager, "_id_map"):
+                            rec.state_attributes_manager._id_map[shared_attrs_str] = attr_id
+
+                    # 3. Clean up existing states in the target time window
+                    session.execute(
+                        delete(States).where(
+                            States.metadata_id == meta_id,
+                            States.last_updated_ts >= start_ts,
+                            States.last_updated_ts <= end_ts,
+                        )
+                    )
+
+                    # 4. Build States objects
+                    for ts, val in points:
+                        dt_obj = datetime.fromtimestamp(ts, tz=timezone.utc)
+                        st_str = f"{val:.2f}"
+                        all_db_states.append(
+                            States(
+                                metadata_id=meta_id,
+                                state=st_str,
+                                attributes_id=attr_id,
+                                last_updated=dt_obj,
+                                last_changed=dt_obj,
+                                last_updated_ts=ts,
+                                last_changed_ts=ts,
+                                last_reported_ts=ts,
+                            )
+                        )
+
+                # 5. Bulk insert in chunks
+                chunk_size = 5000
+                for i in range(0, len(all_db_states), chunk_size):
+                    session.bulk_save_objects(all_db_states[i : i + chunk_size])
+                    session.flush()
+
+                total_saved = len(all_db_states)
+
+            _LOGGER.info(
+                "Successfully injected %d high-precision states into recorder database",
+                total_saved,
+            )
+            return total_saved
+
+        except Exception as err:
+            _LOGGER.warning("Could not inject raw recorder states: %s", err)
+            return 0
+

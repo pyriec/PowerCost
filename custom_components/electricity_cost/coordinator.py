@@ -52,6 +52,18 @@ class ElectricityCostCoordinator:
 
         self._listeners: list[Callable[[], None]] = []
         self._unsub_trackers: list[Callable[[], None]] = []
+        self._rebuilding_devices: set[str] = set()
+
+    def mark_device_rebuilding(self, device_id: str, rebuilding: bool) -> None:
+        """Mark a device as actively rebuilding history."""
+        if rebuilding:
+            self._rebuilding_devices.add(device_id)
+        else:
+            self._rebuilding_devices.discard(device_id)
+
+    def is_device_rebuilding(self, device_id: str) -> bool:
+        """Check if a device is currently rebuilding history."""
+        return device_id in self._rebuilding_devices
 
     async def async_setup(self) -> None:
         """Load stored statistics and start state tracking."""
@@ -187,6 +199,12 @@ class ElectricityCostCoordinator:
             return
 
         for dev_cfg in matching_devices:
+            if self.is_device_rebuilding(dev_cfg.device_id):
+                _LOGGER.debug(
+                    "Device %s is currently rebuilding history, skipping live event",
+                    dev_cfg.device_id,
+                )
+                continue
             await self._async_process_device_reading(dev_cfg, new_state, old_state)
 
     async def _async_process_device_reading(
@@ -222,7 +240,8 @@ class ElectricityCostCoordinator:
             stats.last_source_timestamp = curr_ts
             stats.last_source_unit = unit
             await self.async_save_data()
-            self.async_update_listeners()
+            if stats.energy_total > 0 or stats.cost_total > 0:
+                self.async_update_listeners()
             return
 
         # Compute energy delta

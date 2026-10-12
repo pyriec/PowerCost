@@ -15,6 +15,7 @@ from homeassistant.const import CURRENCY_EURO
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     DOMAIN,
@@ -292,10 +293,11 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class ElectricityCostSensor(SensorEntity):
+class ElectricityCostSensor(RestoreEntity, SensorEntity):
     """Representation of an PowerCost Sensor."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
 
     def __init__(
         self,
@@ -309,6 +311,7 @@ class ElectricityCostSensor(SensorEntity):
         self.device_cfg = device_cfg
         self.entity_description = description
         self.sensor_type = sensor_type
+        self._restored_value: float | None = None
 
         # Unique ID pattern
         self._attr_unique_id = f"{coordinator.entry_id}_{device_cfg.device_id}_{sensor_type}"
@@ -322,17 +325,26 @@ class ElectricityCostSensor(SensorEntity):
         )
 
     @property
-    def _stats(self) -> DeviceStatistics:
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        if self.coordinator.is_device_rebuilding(self.device_cfg.device_id):
+            return True
+        if self.device_cfg.device_id in self.coordinator.statistics:
+            return True
+        return self._restored_value is not None
+
+    @property
+    def _stats(self) -> DeviceStatistics | None:
         """Helper to get current statistics for the device."""
-        return self.coordinator.statistics.setdefault(
-            self.device_cfg.device_id,
-            DeviceStatistics(device_id=self.device_cfg.device_id),
-        )
+        return self.coordinator.statistics.get(self.device_cfg.device_id)
 
     @property
     def native_value(self) -> float | None:
         """Return the current sensor value."""
         stats = self._stats
+        if stats is None:
+            return self._restored_value
+
         mapping: dict[str, float] = {
             SENSOR_COST_DAY: stats.cost_today,
             SENSOR_COST_MONTH: stats.cost_this_month,
@@ -372,8 +384,11 @@ class ElectricityCostSensor(SensorEntity):
             "device_id": self.device_cfg.device_id,
             "source_entity": self.device_cfg.source_entity,
             "source_type": self.device_cfg.source_type,
-            "last_rebuild_timestamp": stats.last_rebuild_timestamp,
+            "last_rebuild_timestamp": stats.last_rebuild_timestamp if stats else None,
         }
+
+        if stats is None:
+            return base_attrs
 
         if self.sensor_type == SENSOR_COST_DAY:
             base_attrs["energy_today_kwh"] = stats.energy_today
@@ -412,7 +427,15 @@ class ElectricityCostSensor(SensorEntity):
         return base_attrs
 
     async def async_added_to_hass(self) -> None:
-        """Register coordinator update callback."""
+        """Register coordinator update callback and restore last known state."""
+        await super().async_added_to_hass()
         self.async_on_remove(
             self.coordinator.async_register_listener(self.async_write_ha_state)
         )
+        if self.device_cfg.device_id not in self.coordinator.statistics:
+            last_state = await self.async_get_last_state()
+            if last_state and last_state.state not in ("unavailable", "unknown", ""):
+                try:
+                    self._restored_value = float(last_state.state)
+                except (ValueError, TypeError):
+                    self._restored_value = None

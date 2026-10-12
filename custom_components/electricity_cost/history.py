@@ -184,9 +184,10 @@ async def async_purge_device_data_and_history(
     entity_ids = get_device_entity_ids(hass, coordinator.entry_id, device_id)
     _LOGGER.info("Purging all data and history for device %s (entities: %s)", device_id, entity_ids)
 
-    # 1. Clear Long-Term Statistics
+    # 1. Clear Long-Term Statistics and entity state history in recorder
     if entity_ids:
         await async_clear_recorder_statistics(hass, entity_ids)
+        await async_purge_recorder_entity_states(hass, entity_ids)
 
     # 2. Reset in-memory and stored statistics
     coordinator.statistics[device_id] = DeviceStatistics(device_id=device_id)
@@ -382,6 +383,29 @@ class HistoryRebuilder:
         if not device_cfg:
             raise ValueError(f"Appareil '{device_id}' non trouvé dans la configuration PowerCost")
 
+        self.coordinator.mark_device_rebuilding(device_id, True)
+        try:
+            return await self._async_rebuild_device_impl(
+                device_id=device_id,
+                device_cfg=device_cfg,
+                start_date=start_date,
+                end_date=end_date,
+                clear_existing=clear_existing,
+                data_source=data_source,
+            )
+        finally:
+            self.coordinator.mark_device_rebuilding(device_id, False)
+
+    async def _async_rebuild_device_impl(
+        self,
+        device_id: str,
+        device_cfg: DeviceConfig,
+        start_date: datetime,
+        end_date: datetime,
+        clear_existing: bool = True,
+        data_source: str = DATA_SOURCE_MIXED,
+    ) -> dict[str, Any]:
+        """Internal implementation of rebuilding device history."""
         pricing_cfg = self.coordinator.pricing_config
         norm_source = normalize_data_source(data_source)
 
@@ -550,10 +574,13 @@ class HistoryRebuilder:
             raw_period_used[1].isoformat() if raw_period_used else "None",
         )
 
-        # 3. Purge existing statistics if requested (only done after validation passes!)
+        # 3. Purge old recorder statistics and state history if requested (done without wiping in-memory state during rebuild)
         if clear_existing:
             _LOGGER.info("Purging old statistics before rebuild for %s", device_cfg.name)
-            await async_purge_device_data_and_history(self.hass, self.coordinator, device_id, notify_listeners=False)
+            entity_ids = get_device_entity_ids(self.hass, self.coordinator.entry_id, device_id)
+            if entity_ids:
+                await async_clear_recorder_statistics(self.hass, entity_ids)
+                await async_purge_recorder_entity_states(self.hass, entity_ids)
 
         # 4. Build list of entities to query
         entity_ids_to_query = [device_cfg.source_entity]
@@ -835,7 +862,15 @@ class HistoryRebuilder:
                 "records_processed": 0,
             }
 
-        # 6. Finalize statistics
+        # 6. Finalize statistics and sync baseline with current live state
+        curr_live_state = self.hass.states.get(device_cfg.source_entity)
+        if curr_live_state:
+            live_val = parse_float_state(curr_live_state)
+            if live_val is not None:
+                last_val = live_val
+                last_ts = curr_live_state.last_updated.timestamp()
+                unit = device_cfg.source_unit or curr_live_state.attributes.get("unit_of_measurement")
+
         stats.last_source_value = last_val
         stats.last_source_timestamp = last_ts
         stats.last_source_unit = unit

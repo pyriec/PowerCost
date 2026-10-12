@@ -191,3 +191,56 @@ async def test_rebuild_history_service_with_data_source(hass: HomeAssistant):
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_does_not_drop_to_zero_during_execution(hass: HomeAssistant):
+    """Test that existing stats are preserved and live readings are ignored during rebuild."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="PowerCost",
+        data={
+            CONF_PRICING_MODE: PRICING_MODE_VARIABLE,
+            CONF_VARIABLE_PRICE_ENTITY: "sensor.test_price",
+            CONF_DEVICES: [
+                {
+                    CONF_DEVICE_ID: "dev_wash",
+                    CONF_DEVICE_NAME: "Lave Linge",
+                    CONF_SOURCE_ENTITY: "sensor.wash_power",
+                    CONF_SOURCE_TYPE: SOURCE_TYPE_POWER,
+                }
+            ],
+        },
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    stats = coordinator.statistics["dev_wash"]
+    stats.cost_today = 10.0
+    stats.energy_today = 40.0
+    stats.cost_this_month = 25.0
+    stats.energy_this_month = 100.0
+
+    # Simulate rebuild running
+    coordinator.mark_device_rebuilding("dev_wash", True)
+    assert coordinator.is_device_rebuilding("dev_wash") is True
+
+    # Incoming live reading while rebuild is in progress:
+    hass.states.async_set(
+        "sensor.wash_power",
+        "500",
+        {"unit_of_measurement": "W"},
+    )
+    await hass.async_block_till_done()
+
+    # Prior stats must NOT be reset or wiped to 0
+    assert stats.cost_this_month == 25.0
+    assert stats.energy_this_month == 100.0
+
+    coordinator.mark_device_rebuilding("dev_wash", False)
+    assert coordinator.is_device_rebuilding("dev_wash") is False
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()

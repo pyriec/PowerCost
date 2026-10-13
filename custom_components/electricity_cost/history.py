@@ -1404,6 +1404,13 @@ class HistoryRebuilder:
                 await self._async_import_sensor_stats(entity_id, friendly_name, pts, unit=unit, unit_class=unit_class)
                 total_imported_points += len(pts)
 
+            # Bridge the short-term statistics table so Home Assistant's native
+            # recorder continues smoothly from the reconstructed sum instead of resetting to 0.
+            await self._async_run_recorder_job(
+                self._seed_short_term_statistics_sync,
+                target_items,
+            )
+
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.warning("Could not inject statistics for %s: %s", device_cfg.name, err)
 
@@ -1642,4 +1649,135 @@ class HistoryRebuilder:
         except Exception as err:
             _LOGGER.warning("Could not inject raw recorder states: %s", err)
             return 0
+
+    def _seed_short_term_statistics_sync(
+        self,
+        target_items: list[tuple[str, str, list[dict[str, Any]], str, str | None]],
+    ) -> int:
+        """Seed statistics_short_term with the latest reconstructed points to ensure continuity."""
+        if not target_items:
+            return 0
+
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.db_schema import (
+                StatisticsMeta,
+                StatisticsShortTerm,
+            )
+            from homeassistant.components.recorder.util import session_scope
+            from sqlalchemy import delete, select
+
+            try:
+                rec = get_instance(self.hass)
+            except Exception:
+                rec = None
+
+            if not rec:
+                _LOGGER.debug("Recorder instance not available; skipping short-term stats seeding")
+                return 0
+
+            col_names = {col.name for col in StatisticsShortTerm.__table__.columns}
+            seeded_count = 0
+            now_dt = dt_util.utcnow()
+            now_ts = now_dt.timestamp()
+
+            with session_scope(hass=self.hass) as session:
+                for entity_id, friendly_name, pts, unit, _ in target_items:
+                    if not pts or not entity_id:
+                        continue
+
+                    last_pt = pts[-1]
+                    pt_start = last_pt.get("start")
+                    if not pt_start:
+                        continue
+
+                    start_dt = pt_start if isinstance(pt_start, datetime) else _parse_stat_timestamp(pt_start)
+                    start_ts = start_dt.timestamp()
+                    st_val = float(last_pt.get("state", 0.0))
+                    sum_val = float(last_pt.get("sum", 0.0))
+
+                    # 1. Resolve metadata_id from StatisticsMeta
+                    meta_id: int | None = None
+                    if hasattr(rec, "statistics_meta_manager"):
+                        mgr = rec.statistics_meta_manager
+                        if hasattr(mgr, "get"):
+                            try:
+                                res_m = mgr.get(session, entity_id)
+                                if isinstance(res_m, int):
+                                    meta_id = res_m
+                                elif isinstance(res_m, (tuple, list)) and len(res_m) > 0 and isinstance(res_m[0], int):
+                                    meta_id = res_m[0]
+                            except Exception:
+                                meta_id = None
+                        if meta_id is None and hasattr(mgr, "get_metadata_id"):
+                            try:
+                                res_m = mgr.get_metadata_id(entity_id)
+                                if isinstance(res_m, int):
+                                    meta_id = res_m
+                            except Exception:
+                                meta_id = None
+
+                    if meta_id is None:
+                        meta_row = session.execute(
+                            select(StatisticsMeta).where(StatisticsMeta.statistic_id == entity_id)
+                        ).scalar_one_or_none()
+                        if not meta_row:
+                            meta_row = StatisticsMeta(
+                                statistic_id=entity_id,
+                                source="recorder",
+                                unit_of_measurement=unit,
+                                has_mean=False,
+                                has_sum=True,
+                                name=friendly_name,
+                            )
+                            session.add(meta_row)
+                            session.flush()
+                        meta_id = getattr(meta_row, "id", None) or getattr(meta_row, "metadata_id", None)
+
+                    if meta_id is None:
+                        continue
+
+                    # Update manager in-memory cache if available
+                    if hasattr(rec, "statistics_meta_manager"):
+                        mgr = rec.statistics_meta_manager
+                        if hasattr(mgr, "_id_map") and isinstance(mgr._id_map, dict):
+                            mgr._id_map[entity_id] = meta_id
+                        if hasattr(mgr, "_metadata_ids") and isinstance(mgr._metadata_ids, dict):
+                            mgr._metadata_ids[entity_id] = meta_id
+
+                    # 2. Clean existing short-term records for this metadata_id to prevent duplicates or stale zero sums
+                    session.execute(
+                        delete(StatisticsShortTerm).where(StatisticsShortTerm.metadata_id == meta_id)
+                    )
+
+                    # 3. Create the seed StatisticsShortTerm record
+                    stat_kwargs: dict[str, Any] = {
+                        "metadata_id": meta_id,
+                        "state": st_val,
+                        "sum": sum_val,
+                    }
+                    if "start_ts" in col_names:
+                        stat_kwargs["start_ts"] = start_ts
+                    if "start" in col_names:
+                        stat_kwargs["start"] = start_dt
+                    if "created_ts" in col_names:
+                        stat_kwargs["created_ts"] = now_ts
+                    if "created" in col_names:
+                        stat_kwargs["created"] = now_dt
+
+                    session.add(StatisticsShortTerm(**stat_kwargs))
+                    seeded_count += 1
+
+                session.flush()
+
+            _LOGGER.info(
+                "Successfully seeded %d entities into statistics_short_term for continuity",
+                seeded_count,
+            )
+            return seeded_count
+
+        except Exception as err:
+            _LOGGER.warning("Could not seed statistics_short_term: %s", err)
+            return 0
+
 

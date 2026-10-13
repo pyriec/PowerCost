@@ -17,7 +17,7 @@ rebuild_history:
         datetime:
     end_date:
       name: Date de fin
-      description: Date de fin pour la reconstruction (par défaut maintenant).
+      description: "Date de fin pour la reconstruction (laisser vide pour reconstruire jusqu'à maintenant et assurer une continuité parfaite)."
       required: false
       selector:
         datetime:

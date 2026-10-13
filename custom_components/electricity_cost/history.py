@@ -1384,32 +1384,52 @@ class HistoryRebuilder:
                     ]
                 )
 
+            def _resolve_entity_id(sensor_key: str) -> str | None:
+                full_uid = f"{unique_prefix}{sensor_key}"
+                eid = ent_reg.async_get_entity_id("sensor", DOMAIN, full_uid)
+                if eid:
+                    return eid
+                if hasattr(ent_reg, "entities"):
+                    for ent in ent_reg.entities.values():
+                        if getattr(ent, "platform", None) == DOMAIN:
+                            uid = getattr(ent, "unique_id", "")
+                            if uid == full_uid or (uid.endswith(f"_{sensor_key}") and device_cfg.device_id in uid):
+                                return ent.entity_id
+                for candidate in (
+                    f"sensor.{device_cfg.device_id}_{sensor_key}",
+                    f"sensor.{device_cfg.name.lower().replace(' ', '_')}_{sensor_key}",
+                ):
+                    if candidate in self.hass.states.async_entity_ids("sensor"):
+                        return candidate
+                return None
+
             target_items: list[tuple[str, str, list[dict[str, Any]], str, str | None]] = []
             for sensor_key, friendly_name, pts, unit, unit_class in mappings:
-                entity_id = ent_reg.async_get_entity_id(
-                    "sensor", DOMAIN, f"{unique_prefix}{sensor_key}"
-                )
+                entity_id = _resolve_entity_id(sensor_key)
                 if entity_id and pts:
                     target_items.append((entity_id, friendly_name, pts, unit, unit_class))
+                else:
+                    _LOGGER.debug(
+                        "Could not resolve entity_id for %s (sensor_key=%s, points=%d)",
+                        friendly_name,
+                        sensor_key,
+                        len(pts) if pts else 0,
+                    )
 
             if not target_items:
                 return 0
 
-            # Ensure target entities are cleared from recorder statistics first to avoid UNIQUE constraint conflicts
-            await async_clear_recorder_statistics(
-                self.hass, [eid for eid, _, _, _, _ in target_items]
-            )
-
-            for entity_id, friendly_name, pts, unit, unit_class in target_items:
-                await self._async_import_sensor_stats(entity_id, friendly_name, pts, unit=unit, unit_class=unit_class)
-                total_imported_points += len(pts)
-
-            # Bridge the short-term statistics table so Home Assistant's native
-            # recorder continues smoothly from the reconstructed sum instead of resetting to 0.
-            await self._async_run_recorder_job(
-                self._seed_short_term_statistics_sync,
+            # 1. Directly inject hourly points into Statistics table and seed StatisticsShortTerm
+            # to guarantee continuous curves and avoid negative variations in monthly bar charts.
+            injected_stats = await self._async_run_recorder_job(
+                self._inject_statistics_to_recorder_sync,
                 target_items,
             )
+            total_imported_points += injected_stats
+
+            # 2. Also register via Home Assistant's standard API with valid metadata
+            for entity_id, friendly_name, pts, unit, unit_class in target_items:
+                await self._async_import_sensor_stats(entity_id, friendly_name, pts, unit=unit, unit_class=unit_class)
 
         except Exception as err:  # pylint: disable=broad-except
             _LOGGER.warning("Could not inject statistics for %s: %s", device_cfg.name, err)
@@ -1431,10 +1451,16 @@ class HistoryRebuilder:
         try:
             from homeassistant.components.recorder.statistics import async_import_statistics
 
+            try:
+                from homeassistant.components.recorder.models import StatisticMeanType
+                mean_type = StatisticMeanType.NONE
+            except Exception:
+                mean_type = 0
+
             metadata: dict[str, Any] = {
                 "has_mean": False,
                 "has_sum": True,
-                "mean_type": None,
+                "mean_type": mean_type,
                 "name": name,
                 "source": "recorder",
                 "statistic_id": entity_id,
@@ -1650,17 +1676,18 @@ class HistoryRebuilder:
             _LOGGER.warning("Could not inject raw recorder states: %s", err)
             return 0
 
-    def _seed_short_term_statistics_sync(
+    def _inject_statistics_to_recorder_sync(
         self,
         target_items: list[tuple[str, str, list[dict[str, Any]], str, str | None]],
     ) -> int:
-        """Seed statistics_short_term with the latest reconstructed points to ensure continuity."""
+        """Directly insert long-term hourly statistics and seed short-term statistics into the recorder database."""
         if not target_items:
             return 0
 
         try:
             from homeassistant.components.recorder import get_instance
             from homeassistant.components.recorder.db_schema import (
+                Statistics,
                 StatisticsMeta,
                 StatisticsShortTerm,
             )
@@ -1673,30 +1700,22 @@ class HistoryRebuilder:
                 rec = None
 
             if not rec:
-                _LOGGER.debug("Recorder instance not available; skipping short-term stats seeding")
+                _LOGGER.debug("Recorder instance not available; skipping direct statistics injection")
                 return 0
 
-            col_names = {col.name for col in StatisticsShortTerm.__table__.columns}
-            seeded_count = 0
+            stat_col_names = {col.name for col in Statistics.__table__.columns}
+            short_col_names = {col.name for col in StatisticsShortTerm.__table__.columns}
+            meta_col_names = {col.name for col in StatisticsMeta.__table__.columns}
+            total_points_saved = 0
             now_dt = dt_util.utcnow()
             now_ts = now_dt.timestamp()
 
             with session_scope(hass=self.hass) as session:
-                for entity_id, friendly_name, pts, unit, _ in target_items:
+                for entity_id, friendly_name, pts, unit, unit_class in target_items:
                     if not pts or not entity_id:
                         continue
 
-                    last_pt = pts[-1]
-                    pt_start = last_pt.get("start")
-                    if not pt_start:
-                        continue
-
-                    start_dt = pt_start if isinstance(pt_start, datetime) else _parse_stat_timestamp(pt_start)
-                    start_ts = start_dt.timestamp()
-                    st_val = float(last_pt.get("state", 0.0))
-                    sum_val = float(last_pt.get("sum", 0.0))
-
-                    # 1. Resolve metadata_id from StatisticsMeta
+                    # 1. Resolve or create metadata_id in StatisticsMeta
                     meta_id: int | None = None
                     if hasattr(rec, "statistics_meta_manager"):
                         mgr = rec.statistics_meta_manager
@@ -1722,22 +1741,40 @@ class HistoryRebuilder:
                             select(StatisticsMeta).where(StatisticsMeta.statistic_id == entity_id)
                         ).scalar_one_or_none()
                         if not meta_row:
-                            meta_row = StatisticsMeta(
-                                statistic_id=entity_id,
-                                source="recorder",
-                                unit_of_measurement=unit,
-                                has_mean=False,
-                                has_sum=True,
-                                name=friendly_name,
-                            )
+                            meta_kwargs: dict[str, Any] = {
+                                "statistic_id": entity_id,
+                                "source": "recorder",
+                                "unit_of_measurement": unit,
+                                "has_mean": False,
+                                "has_sum": True,
+                                "name": friendly_name,
+                            }
+                            if "unit_class" in meta_col_names:
+                                meta_kwargs["unit_class"] = unit_class
+                            if "mean_type" in meta_col_names:
+                                meta_kwargs["mean_type"] = 0
+                            meta_row = StatisticsMeta(**meta_kwargs)
                             session.add(meta_row)
                             session.flush()
+                        else:
+                            changed = False
+                            if "unit_class" in meta_col_names and getattr(meta_row, "unit_class", None) != unit_class:
+                                setattr(meta_row, "unit_class", unit_class)
+                                changed = True
+                            if "mean_type" in meta_col_names and getattr(meta_row, "mean_type", None) is None:
+                                setattr(meta_row, "mean_type", 0)
+                                changed = True
+                            if "has_sum" in meta_col_names and not getattr(meta_row, "has_sum", False):
+                                setattr(meta_row, "has_sum", True)
+                                changed = True
+                            if changed:
+                                session.flush()
                         meta_id = getattr(meta_row, "id", None) or getattr(meta_row, "metadata_id", None)
 
                     if meta_id is None:
                         continue
 
-                    # Update manager in-memory cache if available
+                    # Update recorder manager in-memory cache if available
                     if hasattr(rec, "statistics_meta_manager"):
                         mgr = rec.statistics_meta_manager
                         if hasattr(mgr, "_id_map") and isinstance(mgr._id_map, dict):
@@ -1745,39 +1782,112 @@ class HistoryRebuilder:
                         if hasattr(mgr, "_metadata_ids") and isinstance(mgr._metadata_ids, dict):
                             mgr._metadata_ids[entity_id] = meta_id
 
-                    # 2. Clean existing short-term records for this metadata_id to prevent duplicates or stale zero sums
+                    # 2. Determine time range of reconstructed points
+                    first_pt_start = pts[0].get("start")
+                    last_pt_start = pts[-1].get("start")
+                    p_start_dt = first_pt_start if isinstance(first_pt_start, datetime) else _parse_stat_timestamp(first_pt_start)
+                    p_end_dt = last_pt_start if isinstance(last_pt_start, datetime) else _parse_stat_timestamp(last_pt_start)
+                    p_start_ts = p_start_dt.timestamp()
+                    p_end_ts = p_end_dt.timestamp()
+
+                    # 3. Clean up existing rows in Statistics (hourly) for this metadata_id in the reconstructed window
+                    if "start_ts" in stat_col_names:
+                        session.execute(
+                            delete(Statistics).where(
+                                Statistics.metadata_id == meta_id,
+                                Statistics.start_ts >= p_start_ts,
+                                Statistics.start_ts <= p_end_ts,
+                            )
+                        )
+                    elif "start" in stat_col_names:
+                        session.execute(
+                            delete(Statistics).where(
+                                Statistics.metadata_id == meta_id,
+                                Statistics.start >= p_start_dt,
+                                Statistics.start <= p_end_dt,
+                            )
+                        )
+
+                    # 4. Bulk insert hourly points into Statistics
+                    all_db_stats: list[Statistics] = []
+                    for pt in pts:
+                        pt_start = pt.get("start")
+                        if not pt_start:
+                            continue
+                        s_dt = pt_start if isinstance(pt_start, datetime) else _parse_stat_timestamp(pt_start)
+                        s_ts = s_dt.timestamp()
+                        st_val = float(pt.get("state", 0.0))
+                        sum_val = float(pt.get("sum", 0.0))
+
+                        s_kwargs: dict[str, Any] = {
+                            "metadata_id": meta_id,
+                            "state": st_val,
+                            "sum": sum_val,
+                        }
+                        if "start_ts" in stat_col_names:
+                            s_kwargs["start_ts"] = s_ts
+                        if "start" in stat_col_names:
+                            s_kwargs["start"] = s_dt
+                        if "created_ts" in stat_col_names:
+                            s_kwargs["created_ts"] = now_ts
+                        if "created" in stat_col_names:
+                            s_kwargs["created"] = now_dt
+
+                        all_db_stats.append(Statistics(**s_kwargs))
+
+                    chunk_size = 5000
+                    for i in range(0, len(all_db_stats), chunk_size):
+                        session.bulk_save_objects(all_db_stats[i : i + chunk_size])
+                        session.flush()
+
+                    total_points_saved += len(all_db_stats)
+
+                    # 5. Clean up existing records in StatisticsShortTerm and insert the latest point as seed
                     session.execute(
                         delete(StatisticsShortTerm).where(StatisticsShortTerm.metadata_id == meta_id)
                     )
 
-                    # 3. Create the seed StatisticsShortTerm record
-                    stat_kwargs: dict[str, Any] = {
-                        "metadata_id": meta_id,
-                        "state": st_val,
-                        "sum": sum_val,
-                    }
-                    if "start_ts" in col_names:
-                        stat_kwargs["start_ts"] = start_ts
-                    if "start" in col_names:
-                        stat_kwargs["start"] = start_dt
-                    if "created_ts" in col_names:
-                        stat_kwargs["created_ts"] = now_ts
-                    if "created" in col_names:
-                        stat_kwargs["created"] = now_dt
+                    last_pt = pts[-1]
+                    last_st_val = float(last_pt.get("state", 0.0))
+                    last_sum_val = float(last_pt.get("sum", 0.0))
 
-                    session.add(StatisticsShortTerm(**stat_kwargs))
-                    seeded_count += 1
+                    short_kwargs: dict[str, Any] = {
+                        "metadata_id": meta_id,
+                        "state": last_st_val,
+                        "sum": last_sum_val,
+                    }
+                    if "start_ts" in short_col_names:
+                        short_kwargs["start_ts"] = p_end_ts
+                    if "start" in short_col_names:
+                        short_kwargs["start"] = p_end_dt
+                    if "created_ts" in short_col_names:
+                        short_kwargs["created_ts"] = now_ts
+                    if "created" in short_col_names:
+                        short_kwargs["created"] = now_dt
+
+                    session.add(StatisticsShortTerm(**short_kwargs))
+
+                    # 6. Update short term run cache if available
+                    try:
+                        from homeassistant.components.recorder.statistics import (
+                            get_short_term_statistics_run_cache,
+                            cache_latest_short_term_statistic_id_for_metadata_id,
+                        )
+                        run_cache = get_short_term_statistics_run_cache(self.hass)
+                        cache_latest_short_term_statistic_id_for_metadata_id(run_cache, session, meta_id)
+                    except Exception:
+                        pass
 
                 session.flush()
 
             _LOGGER.info(
-                "Successfully seeded %d entities into statistics_short_term for continuity",
-                seeded_count,
+                "Successfully injected %d hourly statistic points and short-term seeds into recorder database",
+                total_points_saved,
             )
-            return seeded_count
+            return total_points_saved
 
         except Exception as err:
-            _LOGGER.warning("Could not seed statistics_short_term: %s", err)
+            _LOGGER.warning("Could not inject statistics directly into recorder database: %s", err)
             return 0
 
 
